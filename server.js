@@ -619,7 +619,7 @@ app.get('/api/ventas/:empresaID', async (req, res) => {
     const { desde, hasta, sucursal } = req.query;
     let query = `
       SELECT v.*, c.nombre as cliente_nombre, u.nombre as usuario_nombre,
-        (SELECT COUNT(*) FROM venta_detalle WHERE venta_id = v.venta_id) as num_productos
+        (SELECT COUNT(*) FROM detalle_venta WHERE venta_id = v.venta_id) as num_productos
       FROM ventas v
       LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
       LEFT JOIN usuarios u ON v.usuario_id = u.usuario_id
@@ -628,11 +628,11 @@ app.get('/api/ventas/:empresaID', async (req, res) => {
     const params = [req.params.empresaID];
     
     if (desde) {
-      query += ' AND DATE(v.fecha) >= ?';
+      query += ' AND DATE(v.fecha_hora) >= ?';
       params.push(desde);
     }
     if (hasta) {
-      query += ' AND DATE(v.fecha) <= ?';
+      query += ' AND DATE(v.fecha_hora) <= ?';
       params.push(hasta);
     }
     if (sucursal) {
@@ -640,7 +640,7 @@ app.get('/api/ventas/:empresaID', async (req, res) => {
       params.push(sucursal);
     }
     
-    query += ' ORDER BY v.fecha DESC';
+    query += ' ORDER BY v.fecha_hora DESC LIMIT 500';
     
     const [ventas] = await db.query(query, params);
     res.json({ success: true, ventas });
@@ -665,10 +665,10 @@ app.get('/api/ventas/detalle/:id', async (req, res) => {
     }
     
     const [productos] = await db.query(`
-      SELECT vd.*, p.nombre as producto_nombre, p.unidad_venta as unidad
-      FROM venta_detalle vd
-      LEFT JOIN productos p ON vd.producto_id = p.producto_id
-      WHERE vd.venta_id = ?
+      SELECT d.*, p.nombre as producto_nombre, p.unidad_venta as unidad
+      FROM detalle_venta d
+      LEFT JOIN productos p ON d.producto_id = p.producto_id
+      WHERE d.venta_id = ?
     `, [req.params.id]);
     
     res.json({ success: true, venta: ventas[0], productos });
@@ -684,11 +684,9 @@ app.put('/api/ventas/cancelar/:id', async (req, res) => {
     await db.query(`
       UPDATE ventas SET 
         estatus = 'CANCELADA',
-        motivo_cancelacion = ?,
-        usuario_cancelo = ?,
-        fecha_cancelacion = NOW()
+        motivo_cancelacion = ?
       WHERE venta_id = ?
-    `, [motivo_cancelacion, usuario_cancelo, req.params.id]);
+    `, [motivo_cancelacion, req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
