@@ -318,14 +318,29 @@ app.get('/api/metodos-pago/:empresaID', async (req, res) => {
 
 // ==================== POS ====================
 
-// Cargar datos POS
 app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
   try {
     const { empresaID, sucursalID } = req.params;
     
     const [productos] = await db.query(`
       SELECT p.*, c.nombre as categoria_nombre, c.color as categoria_color,
-             COALESCE(i.stock, 0) as stock
+             COALESCE(i.stock, 0) as stock,
+             CASE 
+               WHEN p.precio_incluye_impuesto = 'Y' THEN p.precio1
+               ELSE p.precio1 * (1 + COALESCE(p.iva, 16)/100 + COALESCE(p.ieps, 0)/100)
+             END as precio_venta,
+             CASE 
+               WHEN p.precio_incluye_impuesto = 'Y' THEN p.precio2
+               ELSE p.precio2 * (1 + COALESCE(p.iva, 16)/100 + COALESCE(p.ieps, 0)/100)
+             END as precio_venta2,
+             CASE 
+               WHEN p.precio_incluye_impuesto = 'Y' THEN p.precio3
+               ELSE p.precio3 * (1 + COALESCE(p.iva, 16)/100 + COALESCE(p.ieps, 0)/100)
+             END as precio_venta3,
+             CASE 
+               WHEN p.precio_incluye_impuesto = 'Y' THEN p.precio4
+               ELSE p.precio4 * (1 + COALESCE(p.iva, 16)/100 + COALESCE(p.ieps, 0)/100)
+             END as precio_venta4
       FROM productos p
       LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
       LEFT JOIN inventario i ON p.producto_id = i.producto_id 
@@ -354,7 +369,6 @@ app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
 // Health
 app.get('/health', async (req, res) => {
   try {
