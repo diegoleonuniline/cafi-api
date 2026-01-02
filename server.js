@@ -359,3 +359,203 @@ app.post('/api/ventas', async (req, res) => {
     conn.release();
   }
 });
+// ==================== CATEGORÍAS CRUD ====================
+
+app.get('/api/categorias/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM categorias WHERE empresa_id = ? ORDER BY orden, nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/categorias', async (req, res) => {
+  try {
+    const { empresa_id, nombre, color, icono, orden } = req.body;
+    const id = generarID('CAT');
+    await db.query(
+      'INSERT INTO categorias (categoria_id, empresa_id, nombre, color, icono, orden) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, empresa_id, nombre, color || '#3498db', icono || 'fa-folder', orden || 0]
+    );
+    res.json({ success: true, id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/categorias/:id', async (req, res) => {
+  try {
+    const { nombre, color, icono, orden, activo } = req.body;
+    await db.query(
+      'UPDATE categorias SET nombre=?, color=?, icono=?, orden=?, activo=? WHERE categoria_id=?',
+      [nombre, color, icono, orden, activo || 'Y', req.params.id]
+    );
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/categorias/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE categorias SET activo = "N" WHERE categoria_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== PRODUCTOS CRUD ====================
+
+app.get('/api/productos/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT p.*, c.nombre as categoria_nombre 
+      FROM productos p 
+      LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+      WHERE p.empresa_id = ? 
+      ORDER BY p.nombre
+    `, [req.params.empresaID]);
+    res.json({ success: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get('/api/productos/detalle/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM productos WHERE producto_id = ?', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: 'No encontrado' });
+    res.json({ success: true, data: rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/productos', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('PROD');
+    await db.query(`
+      INSERT INTO productos (
+        producto_id, empresa_id, categoria_id, codigo_barras, codigo_interno,
+        nombre, nombre_corto, nombre_pos, unidad_venta, 
+        costo, precio1, precio2, precio3, precio4,
+        permite_descuento, descuento_maximo, es_inventariable, es_vendible, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [
+      id, d.empresa_id, d.categoria_id || null, d.codigo_barras, d.codigo_interno,
+      d.nombre, d.nombre_corto, d.nombre_pos, d.unidad_venta || 'PZ',
+      d.costo || 0, d.precio1 || 0, d.precio2 || 0, d.precio3 || 0, d.precio4 || 0,
+      d.permite_descuento || 'Y', d.descuento_maximo || 0, d.es_inventariable || 'Y', d.es_vendible || 'Y'
+    ]);
+    res.json({ success: true, id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/productos/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE productos SET 
+        categoria_id=?, codigo_barras=?, codigo_interno=?, nombre=?, nombre_corto=?, nombre_pos=?,
+        unidad_venta=?, costo=?, precio1=?, precio2=?, precio3=?, precio4=?,
+        permite_descuento=?, descuento_maximo=?, es_inventariable=?, es_vendible=?, activo=?
+      WHERE producto_id=?
+    `, [
+      d.categoria_id, d.codigo_barras, d.codigo_interno, d.nombre, d.nombre_corto, d.nombre_pos,
+      d.unidad_venta, d.costo, d.precio1, d.precio2, d.precio3, d.precio4,
+      d.permite_descuento, d.descuento_maximo, d.es_inventariable, d.es_vendible, d.activo || 'Y',
+      req.params.id
+    ]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/productos/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE productos SET activo = "N" WHERE producto_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== CLIENTES CRUD ====================
+
+app.get('/api/clientes/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM clientes WHERE empresa_id = ? ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get('/api/clientes/detalle/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM clientes WHERE cliente_id = ?', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: 'No encontrado' });
+    res.json({ success: true, data: rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/clientes', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('CLI');
+    await db.query(`
+      INSERT INTO clientes (
+        cliente_id, empresa_id, nombre, telefono, email, direccion,
+        rfc, tipo_precio, permite_credito, limite_credito, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [
+      id, d.empresa_id, d.nombre, d.telefono, d.email, d.direccion,
+      d.rfc, d.tipo_precio || 1, d.permite_credito || 'N', d.limite_credito || 0
+    ]);
+    res.json({ success: true, id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/clientes/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE clientes SET 
+        nombre=?, telefono=?, email=?, direccion=?, rfc=?,
+        tipo_precio=?, permite_credito=?, limite_credito=?, activo=?
+      WHERE cliente_id=?
+    `, [
+      d.nombre, d.telefono, d.email, d.direccion, d.rfc,
+      d.tipo_precio, d.permite_credito, d.limite_credito, d.activo || 'Y',
+      req.params.id
+    ]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/clientes/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE clientes SET activo = "N" WHERE cliente_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
