@@ -613,3 +613,84 @@ app.delete('/api/clientes/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+// GET Ventas con filtros
+app.get('/api/ventas/:empresaID', async (req, res) => {
+  try {
+    const { desde, hasta, sucursal } = req.query;
+    let query = `
+      SELECT v.*, c.nombre as cliente_nombre, u.nombre as usuario_nombre,
+        (SELECT COUNT(*) FROM venta_detalle WHERE venta_id = v.venta_id) as num_productos
+      FROM ventas v
+      LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
+      LEFT JOIN usuarios u ON v.usuario_id = u.usuario_id
+      WHERE v.empresa_id = ?
+    `;
+    const params = [req.params.empresaID];
+    
+    if (desde) {
+      query += ' AND DATE(v.fecha) >= ?';
+      params.push(desde);
+    }
+    if (hasta) {
+      query += ' AND DATE(v.fecha) <= ?';
+      params.push(hasta);
+    }
+    if (sucursal) {
+      query += ' AND v.sucursal_id = ?';
+      params.push(sucursal);
+    }
+    
+    query += ' ORDER BY v.fecha DESC';
+    
+    const [ventas] = await db.query(query, params);
+    res.json({ success: true, ventas });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET Detalle de venta
+app.get('/api/ventas/detalle/:id', async (req, res) => {
+  try {
+    const [ventas] = await db.query(`
+      SELECT v.*, c.nombre as cliente_nombre, u.nombre as usuario_nombre
+      FROM ventas v
+      LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
+      LEFT JOIN usuarios u ON v.usuario_id = u.usuario_id
+      WHERE v.venta_id = ?
+    `, [req.params.id]);
+    
+    if (ventas.length === 0) {
+      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+    }
+    
+    const [productos] = await db.query(`
+      SELECT vd.*, p.nombre as producto_nombre, p.unidad_venta as unidad
+      FROM venta_detalle vd
+      LEFT JOIN productos p ON vd.producto_id = p.producto_id
+      WHERE vd.venta_id = ?
+    `, [req.params.id]);
+    
+    res.json({ success: true, venta: ventas[0], productos });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PUT Cancelar venta
+app.put('/api/ventas/cancelar/:id', async (req, res) => {
+  try {
+    const { motivo_cancelacion, usuario_cancelo } = req.body;
+    await db.query(`
+      UPDATE ventas SET 
+        estatus = 'CANCELADA',
+        motivo_cancelacion = ?,
+        usuario_cancelo = ?,
+        fecha_cancelacion = NOW()
+      WHERE venta_id = ?
+    `, [motivo_cancelacion, usuario_cancelo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
