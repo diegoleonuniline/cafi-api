@@ -193,7 +193,7 @@ app.put('/api/productos/:id', async (req, res) => {
         unidad_compra=?, unidad_venta=?, factor_conversion=?, 
         unidad_inventario_id=?, factor_venta=?,
         costo_compra=?, costo=?, precio1=?, precio2=?, precio3=?, precio4=?, precio_minimo=?,
-        iva=?, ieps=?, precio_incluye_impuesto=?,
+        precio_incluye_impuesto=?,
         stock_minimo=?, stock_maximo=?, punto_reorden=?, ubicacion_almacen=?,
         maneja_lotes=?, maneja_caducidad=?, maneja_series=?, dias_caducidad=?,
         es_inventariable=?, es_vendible=?, es_comprable=?, mostrar_pos=?,
@@ -208,7 +208,7 @@ app.put('/api/productos/:id', async (req, res) => {
       d.unidad_compra, d.unidad_venta, d.factor_conversion,
       d.unidad_inventario_id, d.factor_venta,
       d.costo_compra, d.costo, d.precio1, d.precio2, d.precio3, d.precio4, d.precio_minimo,
-      d.iva, d.ieps, d.precio_incluye_impuesto,
+      d.precio_incluye_impuesto,
       d.stock_minimo, d.stock_maximo, d.punto_reorden, d.ubicacion_almacen,
       d.maneja_lotes, d.maneja_caducidad, d.maneja_series, d.dias_caducidad,
       d.es_inventariable, d.es_vendible, d.es_comprable, d.mostrar_pos,
@@ -222,7 +222,6 @@ app.put('/api/productos/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
 app.post('/api/productos', async (req, res) => {
   try {
     const d = req.body;
