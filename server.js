@@ -313,3 +313,49 @@ app.get('/health', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
+
+// ==================== VENTAS ====================
+
+app.post('/api/ventas', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    
+    const d = req.body;
+    const venta_id = generarID('VTA');
+    
+    // Insertar venta
+    await conn.query(`
+      INSERT INTO ventas (venta_id, empresa_id, sucursal_id, almacen_id, usuario_id, cliente_id, total, estatus)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'PAGADA')
+    `, [venta_id, d.empresa_id, d.sucursal_id, d.almacen_id, d.usuario_id, d.cliente_id, d.total]);
+    
+    // Insertar detalles
+    for (const item of d.items) {
+      const detalle_id = generarID('DET');
+      await conn.query(`
+        INSERT INTO detalle_venta (detalle_id, venta_id, producto_id, cantidad, precio_unitario, subtotal)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [detalle_id, venta_id, item.producto_id, item.cantidad, item.precio_unitario, item.subtotal]);
+    }
+    
+    // Insertar pagos
+    for (const pago of d.pagos) {
+      const pago_id = generarID('PAG');
+      await conn.query(`
+        INSERT INTO pagos (pago_id, empresa_id, sucursal_id, venta_id, metodo_pago_id, monto, usuario_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [pago_id, d.empresa_id, d.sucursal_id, venta_id, pago.metodo_pago_id, pago.monto, d.usuario_id]);
+    }
+    
+    await conn.commit();
+    res.json({ success: true, venta_id });
+    
+  } catch (e) {
+    await conn.rollback();
+    console.error('Error venta:', e);
+    res.status(500).json({ success: false, error: e.message });
+  } finally {
+    conn.release();
+  }
+});
