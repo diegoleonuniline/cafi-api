@@ -692,3 +692,56 @@ app.put('/api/ventas/cancelar/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+// POST Nueva venta
+app.post('/api/ventas', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    
+    const d = req.body;
+    const ventaId = generarID('VTA');
+    
+    // Obtener siguiente folio
+    const [folioRes] = await conn.query(
+      'SELECT COALESCE(MAX(folio), 0) + 1 as siguiente FROM ventas WHERE empresa_id = ? AND serie = ?',
+      [d.empresa_id, 'A']
+    );
+    const folio = folioRes[0].siguiente;
+    
+    // Insertar venta
+    await conn.query(`
+      INSERT INTO ventas (
+        venta_id, empresa_id, sucursal_id, almacen_id, usuario_id, cliente_id,
+        tipo, serie, folio, fecha_hora, tipo_venta, tipo_precio,
+        subtotal, total, pagado, cambio, estatus
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'A', ?, NOW(), ?, ?, ?, ?, ?, ?, 'PAGADA')
+    `, [
+      ventaId, d.empresa_id, d.sucursal_id, d.almacen_id, d.usuario_id, d.cliente_id,
+      d.tipo || 'VENTA', folio, d.tipo_venta || 'CONTADO', d.tipo_precio || 1,
+      d.subtotal, d.total, d.pagado, d.cambio
+    ]);
+    
+    // Insertar detalles
+    for (const item of d.items) {
+      const detalleId = generarID('DET');
+      await conn.query(`
+        INSERT INTO detalle_venta (
+          detalle_id, venta_id, producto_id, descripcion, cantidad, unidad_id,
+          precio_lista, precio_unitario, subtotal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        detalleId, ventaId, item.producto_id, item.descripcion, item.cantidad,
+        item.unidad_id || 'PZ', item.precio_unitario, item.precio_unitario, item.subtotal
+      ]);
+    }
+    
+    await conn.commit();
+    res.json({ success: true, venta_id: ventaId, folio: folio });
+  } catch (e) {
+    await conn.rollback();
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  } finally {
+    conn.release();
+  }
+});
