@@ -186,23 +186,77 @@ app.put('/api/productos/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE productos SET categoria_id=?, codigo_barras=?, codigo_interno=?, nombre=?, 
-        nombre_corto=?, nombre_pos=?, unidad_venta=?, costo=?, precio1=?, precio2=?, 
-        precio3=?, precio4=?, permite_descuento=?, descuento_maximo=?, activo=?
+      UPDATE productos SET 
+        categoria_id=?, codigo_barras=?, codigo_interno=?, codigo_sat=?,
+        nombre=?, nombre_corto=?, nombre_pos=?, nombre_ticket=?, descripcion=?,
+        tipo=?, imagen_url=?,
+        unidad_compra=?, unidad_venta=?, factor_conversion=?, 
+        unidad_inventario_id=?, factor_venta=?,
+        costo_compra=?, costo=?, precio1=?, precio2=?, precio3=?, precio4=?, precio_minimo=?,
+        iva=?, ieps=?, precio_incluye_impuesto=?,
+        stock_minimo=?, stock_maximo=?, punto_reorden=?, ubicacion_almacen=?,
+        maneja_lotes=?, maneja_caducidad=?, maneja_series=?, dias_caducidad=?,
+        es_inventariable=?, es_vendible=?, es_comprable=?, mostrar_pos=?,
+        permite_descuento=?, descuento_maximo=?,
+        color_pos=?, orden_pos=?, tecla_rapida=?, notas_internas=?,
+        activo=?
       WHERE producto_id=?
-    `, [d.categoria_id, d.codigo_barras, d.codigo_interno, d.nombre, d.nombre_corto, 
-        d.nombre_pos, d.unidad_venta, d.costo, d.precio1, d.precio2, d.precio3, d.precio4,
-        d.permite_descuento, d.descuento_maximo, d.activo, req.params.id]);
+    `, [
+      d.categoria_id, d.codigo_barras, d.codigo_interno, d.codigo_sat,
+      d.nombre, d.nombre_corto, d.nombre_pos, d.nombre_ticket, d.descripcion,
+      d.tipo, d.imagen_url,
+      d.unidad_compra, d.unidad_venta, d.factor_conversion,
+      d.unidad_inventario_id, d.factor_venta,
+      d.costo_compra, d.costo, d.precio1, d.precio2, d.precio3, d.precio4, d.precio_minimo,
+      d.iva, d.ieps, d.precio_incluye_impuesto,
+      d.stock_minimo, d.stock_maximo, d.punto_reorden, d.ubicacion_almacen,
+      d.maneja_lotes, d.maneja_caducidad, d.maneja_series, d.dias_caducidad,
+      d.es_inventariable, d.es_vendible, d.es_comprable, d.mostrar_pos,
+      d.permite_descuento, d.descuento_maximo,
+      d.color_pos, d.orden_pos, d.tecla_rapida, d.notas_internas,
+      d.activo || 'Y',
+      req.params.id
+    ]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
-app.delete('/api/productos/:id', async (req, res) => {
+app.post('/api/productos', async (req, res) => {
   try {
-    await db.query('UPDATE productos SET activo = "N" WHERE producto_id = ?', [req.params.id]);
-    res.json({ success: true });
+    const d = req.body;
+    const id = generarID('PROD');
+    await db.query(`
+      INSERT INTO productos (
+        producto_id, empresa_id, categoria_id, codigo_barras, codigo_interno, codigo_sat,
+        nombre, nombre_corto, nombre_pos, nombre_ticket, descripcion,
+        tipo, imagen_url,
+        unidad_compra, unidad_venta, factor_conversion,
+        unidad_inventario_id, factor_venta,
+        costo_compra, costo, precio1, precio2, precio3, precio4, precio_minimo,
+        stock_minimo, stock_maximo, punto_reorden, ubicacion_almacen,
+        maneja_lotes, maneja_caducidad, maneja_series, dias_caducidad,
+        es_inventariable, es_vendible, es_comprable, mostrar_pos,
+        permite_descuento, descuento_maximo,
+        color_pos, orden_pos, tecla_rapida, notas_internas,
+        precio_incluye_impuesto, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [
+      id, d.empresa_id, d.categoria_id, d.codigo_barras, d.codigo_interno, d.codigo_sat,
+      d.nombre, d.nombre_corto, d.nombre_pos, d.nombre_ticket, d.descripcion,
+      d.tipo, d.imagen_url,
+      d.unidad_compra, d.unidad_venta, d.factor_conversion,
+      d.unidad_inventario_id, d.factor_venta,
+      d.costo_compra, d.costo, d.precio1, d.precio2, d.precio3, d.precio4, d.precio_minimo,
+      d.stock_minimo, d.stock_maximo, d.punto_reorden, d.ubicacion_almacen,
+      d.maneja_lotes, d.maneja_caducidad, d.maneja_series, d.dias_caducidad,
+      d.es_inventariable, d.es_vendible, d.es_comprable, d.mostrar_pos,
+      d.permite_descuento, d.descuento_maximo,
+      d.color_pos, d.orden_pos, d.tecla_rapida, d.notas_internas,
+      d.precio_incluye_impuesto
+    ]);
+    res.json({ success: true, id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
