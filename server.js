@@ -384,13 +384,12 @@ app.get('/api/metodos-pago/:empresaID', async (req, res) => {
 });
 
 // ==================== POS ====================
-
-// GET /api/pos/cargar/:empresaID/:sucursalID - Cargar datos para POS con impuestos
+// GET /api/pos/cargar/:empresaID/:sucursalID
 app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
     try {
         const { empresaID, sucursalID } = req.params;
         
-        // Productos con impuestos calculados
+        // Productos con impuestos
         const [productos] = await db.query(`
             SELECT 
                 p.*,
@@ -400,74 +399,48 @@ app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
                 COALESCE(imp.tasa_total, 0) as tasa_impuesto
             FROM productos p
             LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
-            LEFT JOIN inventario i ON p.producto_id = i.producto_id 
-                AND i.almacen_id = (SELECT almacen_id FROM almacenes WHERE sucursal_id = ? AND es_punto_venta = 'Y' LIMIT 1)
+            LEFT JOIN inventario i ON p.producto_id = i.producto_id
             LEFT JOIN (
                 SELECT 
                     pi.producto_id,
-                    SUM(imp.tasa) as tasa_total
+                    SUM(COALESCE(im.valor, 0)) as tasa_total
                 FROM producto_impuesto pi
-                JOIN impuestos imp ON pi.impuesto_id = imp.impuesto_id
-                WHERE imp.activo = 'Y'
+                LEFT JOIN impuestos im ON pi.impuesto_id = im.impuesto_id
+                WHERE im.activo = 'Y' AND im.aplica_ventas = 'Y'
                 GROUP BY pi.producto_id
             ) imp ON p.producto_id = imp.producto_id
-            WHERE p.empresa_id = ? AND p.activo = 'Y' AND p.es_vendible = 'Y'
+            WHERE p.empresa_id = ? AND p.activo = 'Y'
             ORDER BY p.nombre
-        `, [sucursalID, empresaID]);
+        `, [empresaID]);
         
         // Calcular precios con impuestos
         productos.forEach(p => {
             const tasa = parseFloat(p.tasa_impuesto) || 0;
             const incluyeImpuesto = p.precio_incluye_impuesto === 'Y';
+            const factor = incluyeImpuesto ? 1 : (1 + tasa / 100);
             
-            // Si el precio YA incluye impuesto, usarlo directo
-            // Si NO incluye impuesto, calcularlo
-            if (incluyeImpuesto) {
-                p.precio_venta = parseFloat(p.precio1) || 0;
-                p.precio_venta2 = parseFloat(p.precio2) || 0;
-                p.precio_venta3 = parseFloat(p.precio3) || 0;
-                p.precio_venta4 = parseFloat(p.precio4) || 0;
-            } else {
-                // Agregar impuestos al precio base
-                const factor = 1 + (tasa / 100);
-                p.precio_venta = (parseFloat(p.precio1) || 0) * factor;
-                p.precio_venta2 = (parseFloat(p.precio2) || 0) * factor;
-                p.precio_venta3 = (parseFloat(p.precio3) || 0) * factor;
-                p.precio_venta4 = (parseFloat(p.precio4) || 0) * factor;
-            }
-            
-            // Redondear a 2 decimales
-            p.precio_venta = Math.round(p.precio_venta * 100) / 100;
-            p.precio_venta2 = Math.round(p.precio_venta2 * 100) / 100;
-            p.precio_venta3 = Math.round(p.precio_venta3 * 100) / 100;
-            p.precio_venta4 = Math.round(p.precio_venta4 * 100) / 100;
+            p.precio_venta = Math.round((parseFloat(p.precio1) || 0) * factor * 100) / 100;
+            p.precio_venta2 = Math.round((parseFloat(p.precio2) || 0) * factor * 100) / 100;
+            p.precio_venta3 = Math.round((parseFloat(p.precio3) || 0) * factor * 100) / 100;
+            p.precio_venta4 = Math.round((parseFloat(p.precio4) || 0) * factor * 100) / 100;
         });
         
-        // Categorías
         const [categorias] = await db.query(
             'SELECT * FROM categorias WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
             [empresaID]
         );
         
-        // Clientes
         const [clientes] = await db.query(
             'SELECT * FROM clientes WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
             [empresaID]
         );
         
-        // Métodos de pago
         const [metodos] = await db.query(
             'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
             [empresaID]
         );
         
-        res.json({
-            success: true,
-            productos,
-            categorias,
-            clientes,
-            metodos
-        });
+        res.json({ success: true, productos, categorias, clientes, metodos });
         
     } catch (error) {
         console.error('Error cargando POS:', error);
