@@ -157,29 +157,54 @@ app.delete('/api/categorias/:id', async (req, res) => {
 
 // ==================== PRODUCTOS ====================
 
+// GET /api/productos/:empresaID - Lista productos con impuestos
 app.get('/api/productos/:empresaID', async (req, res) => {
-  try {
-    const [rows] = await db.query(`
-      SELECT p.*, c.nombre as categoria_nombre 
-      FROM productos p 
-      LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
-      WHERE p.empresa_id = ? 
-      ORDER BY p.nombre
-    `, [req.params.empresaID]);
-    res.json({ success: true, productos: rows, data: rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.get('/api/productos/detalle/:id', async (req, res) => {
-  try {
-    const [rows] = await db.query('SELECT * FROM productos WHERE producto_id = ?', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ success: false, error: 'No encontrado' });
-    res.json({ success: true, data: rows[0] });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
+    try {
+        const { empresaID } = req.params;
+        
+        const [rows] = await db.query(`
+            SELECT 
+                p.*,
+                c.nombre as categoria_nombre,
+                COALESCE(imp.tasa_total, 0) as tasa_impuesto,
+                GROUP_CONCAT(CONCAT(i.nombre, ':', i.tasa) SEPARATOR ', ') as impuestos_detalle
+            FROM productos p
+            LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+            LEFT JOIN (
+                SELECT 
+                    pi.producto_id,
+                    SUM(imp.tasa) as tasa_total
+                FROM producto_impuesto pi
+                JOIN impuestos imp ON pi.impuesto_id = imp.impuesto_id
+                WHERE imp.activo = 'Y'
+                GROUP BY pi.producto_id
+            ) imp ON p.producto_id = imp.producto_id
+            LEFT JOIN producto_impuesto pi2 ON p.producto_id = pi2.producto_id
+            LEFT JOIN impuestos i ON pi2.impuesto_id = i.impuesto_id AND i.activo = 'Y'
+            WHERE p.empresa_id = ?
+            GROUP BY p.producto_id
+            ORDER BY p.nombre
+        `, [empresaID]);
+        
+        // Calcular precios finales
+        rows.forEach(p => {
+            const tasa = parseFloat(p.tasa_impuesto) || 0;
+            const incluyeImpuesto = p.precio_incluye_impuesto === 'Y';
+            
+            if (incluyeImpuesto) {
+                p.precio_venta = parseFloat(p.precio1) || 0;
+            } else {
+                p.precio_venta = (parseFloat(p.precio1) || 0) * (1 + tasa / 100);
+            }
+            p.precio_venta = Math.round(p.precio_venta * 100) / 100;
+        });
+        
+        res.json({ success: true, data: rows, productos: rows });
+        
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
 app.post('/api/productos', async (req, res) => {
@@ -360,48 +385,95 @@ app.get('/api/metodos-pago/:empresaID', async (req, res) => {
 
 // ==================== POS ====================
 
+// GET /api/pos/cargar/:empresaID/:sucursalID - Cargar datos para POS con impuestos
 app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
-  try {
-    const { empresaID, sucursalID } = req.params;
-    
-    // Productos con precios (sin columnas iva/ieps que no existen)
-    const [productos] = await db.query(`
-      SELECT p.*, c.nombre as categoria_nombre, c.color as categoria_color,
-             COALESCE(i.stock, 0) as stock,
-             p.precio1 as precio_venta,
-             p.precio2 as precio_venta2,
-             p.precio3 as precio_venta3,
-             p.precio4 as precio_venta4
-      FROM productos p
-      LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
-      LEFT JOIN inventario i ON p.producto_id = i.producto_id 
-        AND i.almacen_id = (SELECT almacen_id FROM almacenes WHERE sucursal_id = ? AND es_punto_venta = 'Y' LIMIT 1)
-      WHERE p.empresa_id = ? AND p.activo = 'Y' AND p.es_vendible = 'Y'
-      ORDER BY p.nombre
-    `, [sucursalID, empresaID]);
-    
-    const [categorias] = await db.query(
-      'SELECT * FROM categorias WHERE empresa_id = ? AND activo = "Y" ORDER BY orden',
-      [empresaID]
-    );
-    
-    const [clientes] = await db.query(
-      'SELECT cliente_id, nombre, telefono, tipo_precio, permite_credito, limite_credito, saldo FROM clientes WHERE empresa_id = ? AND activo = "Y"',
-      [empresaID]
-    );
-    
-    const [metodos] = await db.query(
-      'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY orden',
-      [empresaID]
-    );
-    
-    res.json({ success: true, productos, categorias, clientes, metodos });
-  } catch (e) {
-    console.error('Error pos/cargar:', e);
-    res.status(500).json({ success: false, error: e.message });
-  }
+    try {
+        const { empresaID, sucursalID } = req.params;
+        
+        // Productos con impuestos calculados
+        const [productos] = await db.query(`
+            SELECT 
+                p.*,
+                c.nombre as categoria_nombre,
+                c.color as categoria_color,
+                COALESCE(i.stock, 0) as stock,
+                COALESCE(imp.tasa_total, 0) as tasa_impuesto
+            FROM productos p
+            LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+            LEFT JOIN inventario i ON p.producto_id = i.producto_id 
+                AND i.almacen_id = (SELECT almacen_id FROM almacenes WHERE sucursal_id = ? AND es_punto_venta = 'Y' LIMIT 1)
+            LEFT JOIN (
+                SELECT 
+                    pi.producto_id,
+                    SUM(imp.tasa) as tasa_total
+                FROM producto_impuesto pi
+                JOIN impuestos imp ON pi.impuesto_id = imp.impuesto_id
+                WHERE imp.activo = 'Y'
+                GROUP BY pi.producto_id
+            ) imp ON p.producto_id = imp.producto_id
+            WHERE p.empresa_id = ? AND p.activo = 'Y' AND p.es_vendible = 'Y'
+            ORDER BY p.nombre
+        `, [sucursalID, empresaID]);
+        
+        // Calcular precios con impuestos
+        productos.forEach(p => {
+            const tasa = parseFloat(p.tasa_impuesto) || 0;
+            const incluyeImpuesto = p.precio_incluye_impuesto === 'Y';
+            
+            // Si el precio YA incluye impuesto, usarlo directo
+            // Si NO incluye impuesto, calcularlo
+            if (incluyeImpuesto) {
+                p.precio_venta = parseFloat(p.precio1) || 0;
+                p.precio_venta2 = parseFloat(p.precio2) || 0;
+                p.precio_venta3 = parseFloat(p.precio3) || 0;
+                p.precio_venta4 = parseFloat(p.precio4) || 0;
+            } else {
+                // Agregar impuestos al precio base
+                const factor = 1 + (tasa / 100);
+                p.precio_venta = (parseFloat(p.precio1) || 0) * factor;
+                p.precio_venta2 = (parseFloat(p.precio2) || 0) * factor;
+                p.precio_venta3 = (parseFloat(p.precio3) || 0) * factor;
+                p.precio_venta4 = (parseFloat(p.precio4) || 0) * factor;
+            }
+            
+            // Redondear a 2 decimales
+            p.precio_venta = Math.round(p.precio_venta * 100) / 100;
+            p.precio_venta2 = Math.round(p.precio_venta2 * 100) / 100;
+            p.precio_venta3 = Math.round(p.precio_venta3 * 100) / 100;
+            p.precio_venta4 = Math.round(p.precio_venta4 * 100) / 100;
+        });
+        
+        // Categorías
+        const [categorias] = await db.query(
+            'SELECT * FROM categorias WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+            [empresaID]
+        );
+        
+        // Clientes
+        const [clientes] = await db.query(
+            'SELECT * FROM clientes WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+            [empresaID]
+        );
+        
+        // Métodos de pago
+        const [metodos] = await db.query(
+            'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+            [empresaID]
+        );
+        
+        res.json({
+            success: true,
+            productos,
+            categorias,
+            clientes,
+            metodos
+        });
+        
+    } catch (error) {
+        console.error('Error cargando POS:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
-
 // ==================== VENTAS ====================
 
 app.get('/api/ventas/:empresaID', async (req, res) => {
