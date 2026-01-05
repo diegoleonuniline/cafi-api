@@ -126,25 +126,6 @@ app.get('/api/impuestos/:empresaID', async (req, res) => {
   }
 });
 
-
-//  obtener impuestos de un producto
-
-app.get('/api/productos/:productoID/impuestos', async (req, res) => {
-  try {
-    const [rows] = await db.query(`
-      SELECT i.* FROM producto_impuesto pi
-      JOIN impuestos i ON pi.impuesto_id = i.impuesto_id
-      WHERE pi.producto_id = ?
-    `, [req.params.productoID]);
-    res.json({ success: true, impuestos: rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-
-// ==================== IMPUESTOS CRUD COMPLETO ====================
-
 // Obtener TODOS los impuestos (incluyendo inactivos)
 app.get('/api/impuestos/:empresaID/todos', async (req, res) => {
   try {
@@ -166,7 +147,7 @@ app.post('/api/impuestos', async (req, res) => {
     await db.query(`
       INSERT INTO impuestos (impuesto_id, empresa_id, nombre, tipo, valor, aplica_ventas, aplica_compras, activo)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
-    `, [id, d.empresa_id, d.nombre, d.tipo || 'PORCENTAJE', d.valor, d.aplica_ventas || 'Y', d.aplica_compras || 'Y']);
+    `, [id, d.empresa_id, d.nombre, d.tipo || 'PORCENTAJE', d.valor || 0, d.aplica_ventas || 'Y', d.aplica_compras || 'Y']);
     res.json({ success: true, id, impuesto_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -197,7 +178,19 @@ app.delete('/api/impuestos/:id', async (req, res) => {
   }
 });
 
-// ==================== MÉTODOS DE PAGO CRUD COMPLETO ====================
+// ==================== MÉTODOS DE PAGO ====================
+
+app.get('/api/metodos-pago/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY orden',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, metodos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 // Obtener TODOS los métodos (incluyendo inactivos)
 app.get('/api/metodos-pago/:empresaID/todos', async (req, res) => {
@@ -250,6 +243,7 @@ app.delete('/api/metodos-pago/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
 // ==================== CATEGORÍAS ====================
 
 app.get('/api/categorias/:empresaID', async (req, res) => {
@@ -312,8 +306,8 @@ app.get('/api/productos/:empresaID', async (req, res) => {
       LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
       LEFT JOIN (
         SELECT pi.producto_id,
-               SUM(i.valor) as tasa_total,
-               GROUP_CONCAT(CONCAT(i.nombre, ':', i.valor) SEPARATOR ', ') as impuestos_detalle
+               SUM(CASE WHEN pi.tipo = 'PORCENTAJE' THEN pi.valor ELSE 0 END) as tasa_total,
+               GROUP_CONCAT(CONCAT(i.nombre, ':', pi.tipo, ':', pi.valor) SEPARATOR ', ') as impuestos_detalle
         FROM producto_impuesto pi
         JOIN impuestos i ON pi.impuesto_id = i.impuesto_id AND i.activo = 'Y' AND i.aplica_ventas = 'Y'
         GROUP BY pi.producto_id
@@ -335,6 +329,21 @@ app.get('/api/productos/:empresaID', async (req, res) => {
     });
     
     res.json({ success: true, data: rows, productos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Obtener impuestos de un producto con valores personalizados
+app.get('/api/productos/:productoID/impuestos', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT pi.impuesto_id, i.nombre, pi.tipo, pi.valor
+      FROM producto_impuesto pi
+      JOIN impuestos i ON pi.impuesto_id = i.impuesto_id
+      WHERE pi.producto_id = ?
+    `, [req.params.productoID]);
+    res.json({ success: true, impuestos: rows });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -378,13 +387,22 @@ app.post('/api/productos', async (req, res) => {
       d.color_pos, d.orden_pos || 0, d.tecla_rapida, d.notas_internas
     ]);
     
-    // Insertar impuestos si vienen
+    // Insertar impuestos con tipo y valor personalizado
     if (d.impuestos && d.impuestos.length > 0) {
-      for (const impuesto_id of d.impuestos) {
-        await conn.query(
-          'INSERT INTO producto_impuesto (producto_id, impuesto_id) VALUES (?, ?)',
-          [id, impuesto_id]
-        );
+      for (const imp of d.impuestos) {
+        // Si viene como objeto {impuesto_id, tipo, valor}
+        if (typeof imp === 'object') {
+          await conn.query(
+            'INSERT INTO producto_impuesto (producto_id, impuesto_id, tipo, valor) VALUES (?, ?, ?, ?)',
+            [id, imp.impuesto_id, imp.tipo || 'PORCENTAJE', imp.valor || 0]
+          );
+        } else {
+          // Si viene solo como string (impuesto_id) - compatibilidad
+          await conn.query(
+            'INSERT INTO producto_impuesto (producto_id, impuesto_id, tipo, valor) VALUES (?, ?, "PORCENTAJE", 0)',
+            [id, imp]
+          );
+        }
       }
     }
     
@@ -437,15 +455,24 @@ app.put('/api/productos/:id', async (req, res) => {
       req.params.id
     ]);
     
-    // Actualizar impuestos si vienen
+    // Actualizar impuestos con tipo y valor personalizado
     if (d.impuestos !== undefined) {
       await conn.query('DELETE FROM producto_impuesto WHERE producto_id = ?', [req.params.id]);
       if (d.impuestos && d.impuestos.length > 0) {
-        for (const impuesto_id of d.impuestos) {
-          await conn.query(
-            'INSERT INTO producto_impuesto (producto_id, impuesto_id) VALUES (?, ?)',
-            [req.params.id, impuesto_id]
-          );
+        for (const imp of d.impuestos) {
+          // Si viene como objeto {impuesto_id, tipo, valor}
+          if (typeof imp === 'object') {
+            await conn.query(
+              'INSERT INTO producto_impuesto (producto_id, impuesto_id, tipo, valor) VALUES (?, ?, ?, ?)',
+              [req.params.id, imp.impuesto_id, imp.tipo || 'PORCENTAJE', imp.valor || 0]
+            );
+          } else {
+            // Si viene solo como string (impuesto_id) - compatibilidad
+            await conn.query(
+              'INSERT INTO producto_impuesto (producto_id, impuesto_id, tipo, valor) VALUES (?, ?, "PORCENTAJE", 0)',
+              [req.params.id, imp]
+            );
+          }
         }
       }
     }
@@ -541,20 +568,6 @@ app.delete('/api/clientes/:id', async (req, res) => {
   }
 });
 
-// ==================== MÉTODOS DE PAGO ====================
-
-app.get('/api/metodos-pago/:empresaID', async (req, res) => {
-  try {
-    const [rows] = await db.query(
-      'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY orden',
-      [req.params.empresaID]
-    );
-    res.json({ success: true, metodos: rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
 // ==================== POS ====================
 
 app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
@@ -564,12 +577,15 @@ app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
     const [productos] = await db.query(`
       SELECT p.*, c.nombre as categoria_nombre, c.color as categoria_color,
              COALESCE(inv.stock, 0) as stock,
-             COALESCE(imp.tasa_total, 0) as tasa_impuesto
+             COALESCE(imp.tasa_total, 0) as tasa_impuesto,
+             COALESCE(imp.monto_fijo, 0) as monto_impuesto_fijo
       FROM productos p
       LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
       LEFT JOIN inventario inv ON p.producto_id = inv.producto_id
       LEFT JOIN (
-        SELECT pi.producto_id, SUM(i.valor) as tasa_total
+        SELECT pi.producto_id, 
+               SUM(CASE WHEN pi.tipo = 'PORCENTAJE' THEN pi.valor ELSE 0 END) as tasa_total,
+               SUM(CASE WHEN pi.tipo = 'FIJO' THEN pi.valor ELSE 0 END) as monto_fijo
         FROM producto_impuesto pi
         JOIN impuestos i ON pi.impuesto_id = i.impuesto_id AND i.activo = 'Y' AND i.aplica_ventas = 'Y'
         GROUP BY pi.producto_id
@@ -580,12 +596,23 @@ app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
     
     productos.forEach(p => {
       const tasa = parseFloat(p.tasa_impuesto) || 0;
-      const factor = p.precio_incluye_impuesto === 'Y' ? 1 : (1 + tasa / 100);
+      const montoFijo = parseFloat(p.monto_impuesto_fijo) || 0;
+      const precio1 = parseFloat(p.precio1) || 0;
+      const precio2 = parseFloat(p.precio2) || 0;
+      const precio3 = parseFloat(p.precio3) || 0;
+      const precio4 = parseFloat(p.precio4) || 0;
       
-      p.precio_venta = Math.round((parseFloat(p.precio1) || 0) * factor * 100) / 100;
-      p.precio_venta2 = Math.round((parseFloat(p.precio2) || 0) * factor * 100) / 100;
-      p.precio_venta3 = Math.round((parseFloat(p.precio3) || 0) * factor * 100) / 100;
-      p.precio_venta4 = Math.round((parseFloat(p.precio4) || 0) * factor * 100) / 100;
+      if (p.precio_incluye_impuesto === 'Y') {
+        p.precio_venta = precio1;
+        p.precio_venta2 = precio2;
+        p.precio_venta3 = precio3;
+        p.precio_venta4 = precio4;
+      } else {
+        p.precio_venta = Math.round((precio1 * (1 + tasa / 100) + montoFijo) * 100) / 100;
+        p.precio_venta2 = Math.round((precio2 * (1 + tasa / 100) + montoFijo) * 100) / 100;
+        p.precio_venta3 = Math.round((precio3 * (1 + tasa / 100) + montoFijo) * 100) / 100;
+        p.precio_venta4 = Math.round((precio4 * (1 + tasa / 100) + montoFijo) * 100) / 100;
+      }
     });
     
     const [categorias] = await db.query(
