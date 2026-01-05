@@ -1192,7 +1192,7 @@ app.get('/health', async (req, res) => {
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
 
-// Validar clave de administrador (para cualquier acción)
+// Validar clave de administrador
 app.post('/api/auth/validar-admin', async (req, res) => {
     try {
         const { empresa_id, password } = req.body;
@@ -1201,31 +1201,29 @@ app.post('/api/auth/validar-admin', async (req, res) => {
             return res.json({ success: false, error: 'Clave requerida' });
         }
         
-        // Buscar usuarios admin de la empresa
+        // Buscar admin con esa contraseña
         const [admins] = await db.query(`
-            SELECT usuario_id, nombre, password 
+            SELECT usuario_id, nombre 
             FROM usuarios 
             WHERE empresa_id = ? 
-            AND rol IN ('ADMIN', 'SUPERADMIN', 'GERENTE') 
+            AND contrasena = ?
+            AND rol IN ('SuperAdmin', 'Admin', 'Gerente', 'Supervisor')
             AND activo = 'Y'
-        `, [empresa_id]);
+            LIMIT 1
+        `, [empresa_id, password]);
         
-        // Verificar si algún admin tiene esa clave
-        for (const admin of admins) {
-            // Comparar contraseña (ajusta según tu método de hash)
-            if (admin.password === password) {
-                return res.json({ 
-                    success: true, 
-                    admin: admin.nombre,
-                    usuario_id: admin.usuario_id
-                });
-            }
+        if (admins.length > 0) {
+            return res.json({ 
+                success: true, 
+                admin: admins[0].nombre,
+                usuario_id: admins[0].usuario_id
+            });
         }
         
         res.json({ success: false, error: 'Clave incorrecta' });
         
     } catch (error) {
         console.error('Error validando admin:', error);
-        res.status(500).json({ success: false, error: 'Error del servidor' });
+        res.json({ success: false, error: 'Error del servidor' });
     }
 });
