@@ -126,7 +126,6 @@ app.get('/api/impuestos/:empresaID', async (req, res) => {
   }
 });
 
-// Obtener TODOS los impuestos (incluyendo inactivos)
 app.get('/api/impuestos/:empresaID/todos', async (req, res) => {
   try {
     const [rows] = await db.query(
@@ -139,7 +138,6 @@ app.get('/api/impuestos/:empresaID/todos', async (req, res) => {
   }
 });
 
-// Crear impuesto
 app.post('/api/impuestos', async (req, res) => {
   try {
     const d = req.body;
@@ -154,7 +152,6 @@ app.post('/api/impuestos', async (req, res) => {
   }
 });
 
-// Actualizar impuesto
 app.put('/api/impuestos/:id', async (req, res) => {
   try {
     const d = req.body;
@@ -168,7 +165,6 @@ app.put('/api/impuestos/:id', async (req, res) => {
   }
 });
 
-// Eliminar impuesto (soft delete)
 app.delete('/api/impuestos/:id', async (req, res) => {
   try {
     await db.query('UPDATE impuestos SET activo = "N" WHERE impuesto_id = ?', [req.params.id]);
@@ -192,7 +188,6 @@ app.get('/api/metodos-pago/:empresaID', async (req, res) => {
   }
 });
 
-// Obtener TODOS los métodos (incluyendo inactivos)
 app.get('/api/metodos-pago/:empresaID/todos', async (req, res) => {
   try {
     const [rows] = await db.query(
@@ -205,36 +200,33 @@ app.get('/api/metodos-pago/:empresaID/todos', async (req, res) => {
   }
 });
 
-// Crear método de pago
 app.post('/api/metodos-pago', async (req, res) => {
   try {
     const d = req.body;
     const id = generarID('MP');
     await db.query(`
-      INSERT INTO metodos_pago (metodo_pago_id, empresa_id, nombre, icono, clave_sat, requiere_referencia, orden, activo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
-    `, [id, d.empresa_id, d.nombre, d.icono || 'fa-money-bill-wave', d.clave_sat, d.requiere_referencia || 'N', d.orden || 0]);
+      INSERT INTO metodos_pago (metodo_pago_id, empresa_id, nombre, tipo, icono, clave_sat, requiere_referencia, orden, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.nombre, d.tipo || 'EFECTIVO', d.icono || 'fa-money-bill-wave', d.clave_sat, d.requiere_referencia || 'N', d.orden || 0]);
     res.json({ success: true, id, metodo_pago_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
-// Actualizar método de pago
 app.put('/api/metodos-pago/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE metodos_pago SET nombre=?, icono=?, clave_sat=?, requiere_referencia=?, orden=?
+      UPDATE metodos_pago SET nombre=?, tipo=?, icono=?, clave_sat=?, requiere_referencia=?, orden=?
       WHERE metodo_pago_id=?
-    `, [d.nombre, d.icono, d.clave_sat, d.requiere_referencia, d.orden, req.params.id]);
+    `, [d.nombre, d.tipo, d.icono, d.clave_sat, d.requiere_referencia, d.orden, req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
-// Eliminar método de pago (soft delete)
 app.delete('/api/metodos-pago/:id', async (req, res) => {
   try {
     await db.query('UPDATE metodos_pago SET activo = "N" WHERE metodo_pago_id = ?', [req.params.id]);
@@ -334,7 +326,6 @@ app.get('/api/productos/:empresaID', async (req, res) => {
   }
 });
 
-// Obtener impuestos de un producto con valores personalizados
 app.get('/api/productos/:productoID/impuestos', async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -387,17 +378,14 @@ app.post('/api/productos', async (req, res) => {
       d.color_pos, d.orden_pos || 0, d.tecla_rapida, d.notas_internas
     ]);
     
-    // Insertar impuestos con tipo y valor personalizado
     if (d.impuestos && d.impuestos.length > 0) {
       for (const imp of d.impuestos) {
-        // Si viene como objeto {impuesto_id, tipo, valor}
         if (typeof imp === 'object') {
           await conn.query(
             'INSERT INTO producto_impuesto (producto_id, impuesto_id, tipo, valor) VALUES (?, ?, ?, ?)',
             [id, imp.impuesto_id, imp.tipo || 'PORCENTAJE', imp.valor || 0]
           );
         } else {
-          // Si viene solo como string (impuesto_id) - compatibilidad
           await conn.query(
             'INSERT INTO producto_impuesto (producto_id, impuesto_id, tipo, valor) VALUES (?, ?, "PORCENTAJE", 0)',
             [id, imp]
@@ -455,19 +443,16 @@ app.put('/api/productos/:id', async (req, res) => {
       req.params.id
     ]);
     
-    // Actualizar impuestos con tipo y valor personalizado
     if (d.impuestos !== undefined) {
       await conn.query('DELETE FROM producto_impuesto WHERE producto_id = ?', [req.params.id]);
       if (d.impuestos && d.impuestos.length > 0) {
         for (const imp of d.impuestos) {
-          // Si viene como objeto {impuesto_id, tipo, valor}
           if (typeof imp === 'object') {
             await conn.query(
               'INSERT INTO producto_impuesto (producto_id, impuesto_id, tipo, valor) VALUES (?, ?, ?, ?)',
               [req.params.id, imp.impuesto_id, imp.tipo || 'PORCENTAJE', imp.valor || 0]
             );
           } else {
-            // Si viene solo como string (impuesto_id) - compatibilidad
             await conn.query(
               'INSERT INTO producto_impuesto (producto_id, impuesto_id, tipo, valor) VALUES (?, ?, "PORCENTAJE", 0)',
               [req.params.id, imp]
@@ -626,7 +611,7 @@ app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
     );
     
     const [metodos] = await db.query(
-      'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY orden, nombre',
       [empresaID]
     );
     
@@ -755,14 +740,14 @@ app.post('/api/ventas', async (req, res) => {
     
     await conn.query(`
       INSERT INTO ventas (
-        venta_id, empresa_id, sucursal_id, almacen_id, usuario_id, cliente_id,
+        venta_id, empresa_id, sucursal_id, almacen_id, usuario_id, cliente_id, turno_id,
         tipo, serie, folio, fecha_hora, tipo_venta, tipo_precio,
-        subtotal, total, pagado, cambio, estatus
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'A', ?, NOW(), ?, ?, ?, ?, ?, ?, 'PAGADA')
+        subtotal, descuento, total, pagado, cambio, estatus
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'A', ?, NOW(), ?, ?, ?, ?, ?, ?, ?, 'PAGADA')
     `, [
-      ventaId, d.empresa_id, d.sucursal_id, d.almacen_id, d.usuario_id, d.cliente_id,
+      ventaId, d.empresa_id, d.sucursal_id, d.almacen_id, d.usuario_id, d.cliente_id, d.turno_id,
       d.tipo || 'VENTA', folio, d.tipo_venta || 'CONTADO', d.tipo_precio || 1,
-      d.subtotal, d.total, d.pagado, d.cambio
+      d.subtotal, d.descuento || 0, d.total, d.pagado, d.cambio
     ]);
     
     for (const item of d.items) {
@@ -770,11 +755,11 @@ app.post('/api/ventas', async (req, res) => {
       await conn.query(`
         INSERT INTO detalle_venta (
           detalle_id, venta_id, producto_id, descripcion, cantidad, unidad_id,
-          precio_lista, precio_unitario, subtotal
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          precio_lista, precio_unitario, descuento, subtotal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         detalleId, ventaId, item.producto_id, item.descripcion, item.cantidad,
-        item.unidad_id || 'PZ', item.precio_unitario, item.precio_unitario, item.subtotal
+        item.unidad_id || 'PZ', item.precio_unitario, item.precio_unitario, item.descuento || 0, item.subtotal
       ]);
     }
     
@@ -814,26 +799,11 @@ app.put('/api/ventas/cancelar/:id', async (req, res) => {
   }
 });
 
-// ==================== HEALTH ====================
-
-app.get('/health', async (req, res) => {
-  try {
-    await db.query('SELECT 1');
-    res.json({ status: 'ok', db: 'connected' });
-  } catch (e) {
-    res.json({ status: 'ok', db: 'error', error: e.message });
-  }
-});
-
-// ==================== START ====================
-
-app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
-
 // ==================== TURNOS ====================
-// Verificar turno activo
+
 app.get('/api/turnos/activo/:sucursalID/:usuarioID', async (req, res) => {
   try {
-    const { sucursalID, usuarioID } = req.params;
+    const { sucursalID } = req.params;
     const [turnos] = await db.query(`
       SELECT t.*, u.nombre as usuario_nombre
       FROM turnos t
@@ -853,7 +823,6 @@ app.get('/api/turnos/activo/:sucursalID/:usuarioID', async (req, res) => {
   }
 });
 
-// Abrir turno
 app.post('/api/turnos/abrir', async (req, res) => {
   try {
     const { empresa_id, sucursal_id, caja_id, usuario_id, saldo_inicial } = req.body;
@@ -871,7 +840,7 @@ app.post('/api/turnos/abrir', async (req, res) => {
     await db.query(`
       INSERT INTO turnos (turno_id, empresa_id, sucursal_id, caja_id, usuario_id, fecha_apertura, saldo_inicial, estado)
       VALUES (?, ?, ?, ?, ?, NOW(), ?, 'ABIERTO')
-    `, [id, empresa_id, sucursal_id, caja_id || null, usuario_id, saldo_inicial || 0]);
+    `, [id, empresa_id, sucursal_id, caja_id || 'CAJA-01', usuario_id, saldo_inicial || 0]);
     
     res.json({ success: true, turno_id: id });
   } catch (e) {
@@ -879,7 +848,107 @@ app.post('/api/turnos/abrir', async (req, res) => {
   }
 });
 
-// Cerrar turno
+app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
+  try {
+    const { turnoID } = req.params;
+    
+    const [turnos] = await db.query('SELECT * FROM turnos WHERE turno_id = ?', [turnoID]);
+    if (turnos.length === 0) {
+      return res.status(404).json({ success: false, error: 'Turno no encontrado' });
+    }
+    
+    const turno = turnos[0];
+    const saldoInicial = parseFloat(turno.saldo_inicial) || 0;
+    
+    // Ventas del turno
+    const [ventasRes] = await db.query(`
+      SELECT 
+        COUNT(CASE WHEN estatus = 'PAGADA' THEN 1 END) as cantidad_ventas,
+        COALESCE(SUM(CASE WHEN estatus = 'PAGADA' THEN total ELSE 0 END), 0) as total_ventas,
+        COUNT(CASE WHEN estatus = 'CANCELADA' THEN 1 END) as cantidad_canceladas,
+        COALESCE(SUM(CASE WHEN estatus = 'CANCELADA' THEN total ELSE 0 END), 0) as total_canceladas
+      FROM ventas 
+      WHERE turno_id = ?
+    `, [turnoID]);
+    
+    // Desglose por método de pago - Query corregido
+    const [pagosPorMetodo] = await db.query(`
+      SELECT 
+        mp.metodo_pago_id,
+        mp.nombre as metodo_nombre,
+        COALESCE(mp.tipo, 'EFECTIVO') as tipo,
+        COUNT(p.pago_id) as cantidad_pagos,
+        COALESCE(SUM(p.monto), 0) as total
+      FROM metodos_pago mp
+      LEFT JOIN (
+        SELECT p.* FROM pagos p
+        JOIN ventas v ON p.venta_id = v.venta_id
+        WHERE v.turno_id = ? AND v.estatus = 'PAGADA'
+      ) p ON mp.metodo_pago_id = p.metodo_pago_id
+      WHERE mp.empresa_id = ? AND mp.activo = 'Y'
+      GROUP BY mp.metodo_pago_id, mp.nombre, mp.tipo
+      ORDER BY mp.orden, mp.nombre
+    `, [turnoID, turno.empresa_id]);
+    
+    // Movimientos de caja
+    const [movimientos] = await db.query(`
+      SELECT tipo, COALESCE(SUM(monto), 0) as total, COUNT(*) as cantidad
+      FROM movimientos_caja WHERE turno_id = ? GROUP BY tipo
+    `, [turnoID]);
+    
+    let ingresos = 0, egresos = 0, cantIngresos = 0, cantEgresos = 0;
+    movimientos.forEach(m => {
+      if (m.tipo === 'INGRESO') {
+        ingresos = parseFloat(m.total) || 0;
+        cantIngresos = m.cantidad || 0;
+      } else {
+        egresos = parseFloat(m.total) || 0;
+        cantEgresos = m.cantidad || 0;
+      }
+    });
+    
+    // Solo el efectivo de las ventas cuenta para el arqueo
+    let efectivoVentas = 0;
+    const pagosMapeados = pagosPorMetodo.map(p => {
+      const total = parseFloat(p.total) || 0;
+      if ((p.tipo || '').toUpperCase() === 'EFECTIVO') {
+        efectivoVentas += total;
+      }
+      return {
+        metodo_pago_id: p.metodo_pago_id,
+        nombre: p.metodo_nombre || 'Sin nombre',
+        tipo: p.tipo || 'EFECTIVO',
+        cantidad: parseInt(p.cantidad_pagos) || 0,
+        total: total
+      };
+    });
+    
+    const efectivoEsperado = saldoInicial + efectivoVentas + ingresos - egresos;
+    
+    res.json({
+      success: true,
+      turno,
+      ventas: {
+        cantidad_ventas: parseInt(ventasRes[0].cantidad_ventas) || 0,
+        total_ventas: parseFloat(ventasRes[0].total_ventas) || 0,
+        cantidad_canceladas: parseInt(ventasRes[0].cantidad_canceladas) || 0,
+        total_canceladas: parseFloat(ventasRes[0].total_canceladas) || 0
+      },
+      pagos_por_metodo: pagosMapeados,
+      movimientos: {
+        ingresos: ingresos,
+        egresos: egresos,
+        cant_ingresos: cantIngresos,
+        cant_egresos: cantEgresos
+      },
+      efectivo_esperado: efectivoEsperado
+    });
+  } catch (e) {
+    console.error('Error resumen turno:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -895,78 +964,67 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
     }
     
     const turno = turnos[0];
+    const saldoInicial = parseFloat(turno.saldo_inicial) || 0;
     
-    // Calcular ventas del turno
+    // Ventas del turno
     const [ventas] = await conn.query(`
       SELECT 
         COUNT(CASE WHEN estatus = 'PAGADA' THEN 1 END) as cantidad_ventas,
         COALESCE(SUM(CASE WHEN estatus = 'PAGADA' THEN total ELSE 0 END), 0) as total_ventas,
         COUNT(CASE WHEN estatus = 'CANCELADA' THEN 1 END) as cantidad_canceladas,
         COALESCE(SUM(CASE WHEN estatus = 'CANCELADA' THEN total ELSE 0 END), 0) as ventas_canceladas,
-        COALESCE(SUM(CASE WHEN estatus = 'PAGADA' THEN (subtotal * descuento / 100) ELSE 0 END), 0) as descuentos_otorgados
+        COALESCE(SUM(CASE WHEN estatus = 'PAGADA' THEN (subtotal * COALESCE(descuento, 0) / 100) ELSE 0 END), 0) as descuentos_otorgados
       FROM ventas 
-      WHERE sucursal_id = ? 
-        AND fecha_hora >= ? 
-        AND fecha_hora <= NOW()
-    `, [turno.sucursal_id, turno.fecha_apertura]);
+      WHERE turno_id = ?
+    `, [turnoID]);
     
-    // Calcular por método de pago
+    // Pagos por método
     const [pagos] = await conn.query(`
       SELECT 
         COALESCE(mp.tipo, 'EFECTIVO') as tipo,
         COALESCE(SUM(p.monto), 0) as total
       FROM pagos p
-      LEFT JOIN metodos_pago mp ON p.metodo_pago_id = mp.metodo_pago_id
       JOIN ventas v ON p.venta_id = v.venta_id
-      WHERE v.sucursal_id = ? 
-        AND v.fecha_hora >= ?
-        AND v.fecha_hora <= NOW()
-        AND v.estatus = 'PAGADA'
+      LEFT JOIN metodos_pago mp ON p.metodo_pago_id = mp.metodo_pago_id
+      WHERE v.turno_id = ? AND v.estatus = 'PAGADA'
       GROUP BY mp.tipo
-    `, [turno.sucursal_id, turno.fecha_apertura]);
+    `, [turnoID]);
     
-    let ventasEfectivo = 0, ventasTarjeta = 0, ventasTransferencia = 0, ventasOtros = 0;
+    let ventasEfectivo = 0, ventasTarjeta = 0, ventasTransferencia = 0, ventasCredito = 0, ventasOtros = 0;
     pagos.forEach(p => {
-      const tipo = (p.tipo || '').toUpperCase();
-      if (tipo === 'EFECTIVO') ventasEfectivo = parseFloat(p.total);
-      else if (tipo === 'TARJETA') ventasTarjeta = parseFloat(p.total);
-      else if (tipo === 'TRANSFERENCIA') ventasTransferencia = parseFloat(p.total);
-      else ventasOtros += parseFloat(p.total);
+      const tipo = (p.tipo || 'EFECTIVO').toUpperCase();
+      const total = parseFloat(p.total) || 0;
+      if (tipo === 'EFECTIVO') ventasEfectivo = total;
+      else if (tipo === 'TARJETA') ventasTarjeta = total;
+      else if (tipo === 'TRANSFERENCIA') ventasTransferencia = total;
+      else ventasOtros += total;
     });
     
     // Ventas a crédito
     const [creditos] = await conn.query(`
       SELECT COALESCE(SUM(total), 0) as total
       FROM ventas 
-      WHERE sucursal_id = ? 
-        AND fecha_hora >= ?
-        AND tipo_venta = 'CREDITO'
-        AND estatus = 'PAGADA'
-    `, [turno.sucursal_id, turno.fecha_apertura]);
-    const ventasCredito = parseFloat(creditos[0].total) || 0;
+      WHERE turno_id = ? AND tipo_venta = 'CREDITO' AND estatus = 'PAGADA'
+    `, [turnoID]);
+    ventasCredito = parseFloat(creditos[0].total) || 0;
     
     // Movimientos de caja
     const [movimientos] = await conn.query(`
       SELECT tipo, COALESCE(SUM(monto), 0) as total
-      FROM movimientos_caja
-      WHERE turno_id = ?
-      GROUP BY tipo
+      FROM movimientos_caja WHERE turno_id = ? GROUP BY tipo
     `, [turnoID]);
     
     let ingresos = 0, egresos = 0;
     movimientos.forEach(m => {
-      if (m.tipo === 'INGRESO') ingresos = parseFloat(m.total);
-      else egresos = parseFloat(m.total);
+      if (m.tipo === 'INGRESO') ingresos = parseFloat(m.total) || 0;
+      else egresos = parseFloat(m.total) || 0;
     });
     
-    // Calcular efectivo esperado
-    const saldoInicial = parseFloat(turno.saldo_inicial) || 0;
     const efectivoEsperado = saldoInicial + ventasEfectivo + ingresos - egresos;
     const efectivoDeclaradoNum = parseFloat(efectivo_declarado) || 0;
     const diferencia = efectivoDeclaradoNum - efectivoEsperado;
     const totalVentas = ventasEfectivo + ventasTarjeta + ventasTransferencia + ventasCredito + ventasOtros;
     
-    // Actualizar turno
     await conn.query(`
       UPDATE turnos SET 
         fecha_cierre = NOW(),
@@ -991,9 +1049,9 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
       WHERE turno_id = ?
     `, [
       ventasEfectivo, ventasTarjeta, ventasTransferencia, ventasCredito, ventasOtros,
-      totalVentas, ventas[0].cantidad_ventas, 
-      ventas[0].ventas_canceladas, ventas[0].cantidad_canceladas,
-      ventas[0].descuentos_otorgados,
+      totalVentas, ventas[0].cantidad_ventas || 0, 
+      ventas[0].ventas_canceladas || 0, ventas[0].cantidad_canceladas || 0,
+      ventas[0].descuentos_otorgados || 0,
       ingresos, egresos, efectivoEsperado, efectivoDeclaradoNum, diferencia,
       observaciones, cerrado_por, turnoID
     ]);
@@ -1010,9 +1068,9 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
         ventas_credito: ventasCredito,
         ventas_otros: ventasOtros,
         total_ventas: totalVentas,
-        cantidad_ventas: ventas[0].cantidad_ventas,
-        cantidad_canceladas: ventas[0].cantidad_canceladas,
-        descuentos_otorgados: ventas[0].descuentos_otorgados,
+        cantidad_ventas: ventas[0].cantidad_ventas || 0,
+        cantidad_canceladas: ventas[0].cantidad_canceladas || 0,
+        descuentos_otorgados: parseFloat(ventas[0].descuentos_otorgados) || 0,
         ingresos,
         egresos,
         efectivo_esperado: efectivoEsperado,
@@ -1029,50 +1087,28 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
   }
 });
 
-// Resumen del turno actual
-app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
+app.post('/api/turnos/validar-admin', async (req, res) => {
   try {
-    const { turnoID } = req.params;
+    const { empresa_id, password } = req.body;
     
-    const [turnos] = await db.query('SELECT * FROM turnos WHERE turno_id = ?', [turnoID]);
-    if (turnos.length === 0) {
-      return res.status(404).json({ success: false, error: 'Turno no encontrado' });
+    const [admins] = await db.query(`
+      SELECT usuario_id, nombre FROM usuarios 
+      WHERE empresa_id = ? AND rol IN ('ADMIN', 'SUPERADMIN') AND contrasena = ? AND activo = 'Y'
+      LIMIT 1
+    `, [empresa_id, password]);
+    
+    if (admins.length > 0) {
+      res.json({ success: true, admin: admins[0].nombre });
+    } else {
+      res.json({ success: false, error: 'Clave incorrecta' });
     }
-    
-    const turno = turnos[0];
-    
-    const [ventas] = await db.query(`
-      SELECT 
-        COUNT(CASE WHEN estatus = 'PAGADA' THEN 1 END) as cantidad_ventas,
-        COALESCE(SUM(CASE WHEN estatus = 'PAGADA' THEN total ELSE 0 END), 0) as total_ventas
-      FROM ventas 
-      WHERE sucursal_id = ? AND fecha_hora >= ?
-    `, [turno.sucursal_id, turno.fecha_apertura]);
-    
-    const [movimientos] = await db.query(`
-      SELECT tipo, COALESCE(SUM(monto), 0) as total
-      FROM movimientos_caja WHERE turno_id = ? GROUP BY tipo
-    `, [turnoID]);
-    
-    let ingresos = 0, egresos = 0;
-    movimientos.forEach(m => {
-      if (m.tipo === 'INGRESO') ingresos = parseFloat(m.total);
-      else egresos = parseFloat(m.total);
-    });
-    
-    res.json({
-      success: true,
-      turno,
-      ventas: ventas[0],
-      ingresos,
-      egresos
-    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
 // ==================== MOVIMIENTOS DE CAJA ====================
+
 app.get('/api/movimientos-caja/:turnoID', async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -1112,3 +1148,18 @@ app.post('/api/movimientos-caja', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
+// ==================== HEALTH ====================
+
+app.get('/health', async (req, res) => {
+  try {
+    await db.query('SELECT 1');
+    res.json({ status: 'ok', db: 'connected' });
+  } catch (e) {
+    res.json({ status: 'ok', db: 'error', error: e.message });
+  }
+});
+
+// ==================== START ====================
+
+app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
