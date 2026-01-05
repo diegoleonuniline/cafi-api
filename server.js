@@ -28,9 +28,10 @@ const generarID = (prefijo) => `${prefijo}-${uuidv4().substring(0, 8).toUpperCas
 
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { usuario, email, password } = req.body;
+    const loginEmail = email || usuario;
     
-    if (!email || !password) {
+    if (!loginEmail || !password) {
       return res.status(400).json({ success: false, error: 'Email y contraseña requeridos' });
     }
     
@@ -43,7 +44,7 @@ app.post('/api/auth/login', async (req, res) => {
       JOIN sucursales s ON u.sucursal_id = s.sucursal_id
       LEFT JOIN almacenes a ON a.sucursal_id = s.sucursal_id AND a.es_punto_venta = 'Y'
       WHERE u.email = ? AND u.activo = 'Y'
-    `, [email.toLowerCase().trim()]);
+    `, [loginEmail.toLowerCase().trim()]);
     
     if (usuarios.length === 0) {
       return res.status(401).json({ success: false, error: 'Usuario no encontrado' });
