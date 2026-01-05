@@ -750,18 +750,23 @@ app.post('/api/ventas', async (req, res) => {
       d.subtotal, d.descuento || 0, d.total, d.pagado, d.cambio
     ]);
     
-    for (const item of d.items) {
-      const detalleId = generarID('DET');
-      await conn.query(`
-        INSERT INTO detalle_venta (
-          detalle_id, venta_id, producto_id, descripcion, cantidad, unidad_id,
-          precio_lista, precio_unitario, descuento, subtotal
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        detalleId, ventaId, item.producto_id, item.descripcion, item.cantidad,
-        item.unidad_id || 'PZ', item.precio_unitario, item.precio_unitario, item.descuento || 0, item.subtotal
-      ]);
-    }
+for (const item of d.items) {
+  const detalleId = generarID('DET');
+  const subtotalItem = item.precio_unitario * item.cantidad;
+  const descuentoPct = item.descuento || 0;
+  const descuentoMonto = subtotalItem * descuentoPct / 100;
+  
+  await conn.query(`
+    INSERT INTO detalle_venta (
+      detalle_id, venta_id, producto_id, descripcion, cantidad, unidad_id,
+      precio_lista, precio_unitario, descuento_pct, descuento_monto, subtotal
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    detalleId, ventaId, item.producto_id, item.descripcion, item.cantidad,
+    item.unidad_id || 'PZ', item.precio_unitario, item.precio_unitario, 
+    descuentoPct, descuentoMonto, item.subtotal
+  ]);
+}
     
     if (d.pagos && d.pagos.length > 0) {
       for (const pago of d.pagos) {
