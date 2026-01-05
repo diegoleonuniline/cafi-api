@@ -112,6 +112,20 @@ app.get('/api/auth/verificar', async (req, res) => {
   }
 });
 
+// ==================== IMPUESTOS ====================
+
+app.get('/api/impuestos/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM impuestos WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, impuestos: rows, data: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ==================== CATEGORÍAS ====================
 
 app.get('/api/categorias/:empresaID', async (req, res) => {
@@ -167,22 +181,31 @@ app.delete('/api/categorias/:id', async (req, res) => {
 app.get('/api/productos/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(`
-      SELECT p.*, c.nombre as categoria_nombre
+      SELECT p.*, c.nombre as categoria_nombre,
+             COALESCE(imp.tasa_total, 0) as tasa_impuesto,
+             imp.impuestos_detalle
       FROM productos p
       LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+      LEFT JOIN (
+        SELECT pi.producto_id,
+               SUM(i.valor) as tasa_total,
+               GROUP_CONCAT(CONCAT(i.nombre, ':', i.valor) SEPARATOR ', ') as impuestos_detalle
+        FROM producto_impuesto pi
+        JOIN impuestos i ON pi.impuesto_id = i.impuesto_id AND i.activo = 'Y' AND i.aplica_ventas = 'Y'
+        GROUP BY pi.producto_id
+      ) imp ON p.producto_id = imp.producto_id
       WHERE p.empresa_id = ?
       ORDER BY p.nombre
     `, [req.params.empresaID]);
     
     rows.forEach(p => {
-      const iva = parseFloat(p.iva || 16);
-      const ieps = parseFloat(p.ieps || 0);
-      const precio = parseFloat(p.precio1 || 0);
+      const tasa = parseFloat(p.tasa_impuesto) || 0;
+      const precio = parseFloat(p.precio1) || 0;
       
       if (p.precio_incluye_impuesto === 'Y') {
         p.precio_venta = precio;
       } else {
-        p.precio_venta = precio * (1 + (iva + ieps) / 100);
+        p.precio_venta = precio * (1 + tasa / 100);
       }
       p.precio_venta = Math.round(p.precio_venta * 100) / 100;
     });
@@ -194,10 +217,14 @@ app.get('/api/productos/:empresaID', async (req, res) => {
 });
 
 app.post('/api/productos', async (req, res) => {
+  const conn = await db.getConnection();
   try {
+    await conn.beginTransaction();
+    
     const d = req.body;
     const id = generarID('PROD');
-    await db.query(`
+    
+    await conn.query(`
       INSERT INTO productos (
         producto_id, empresa_id, categoria_id, codigo_barras, codigo_interno, codigo_sat,
         nombre, nombre_corto, nombre_pos, nombre_ticket, descripcion,
@@ -205,13 +232,13 @@ app.post('/api/productos', async (req, res) => {
         unidad_compra, unidad_venta, factor_conversion,
         unidad_inventario_id, factor_venta,
         costo_compra, costo, precio1, precio2, precio3, precio4, precio_minimo,
-        iva, ieps, precio_incluye_impuesto,
+        precio_incluye_impuesto,
         stock_minimo, stock_maximo, punto_reorden, ubicacion_almacen,
         maneja_lotes, maneja_caducidad, maneja_series, dias_caducidad,
         es_inventariable, es_vendible, es_comprable, mostrar_pos,
         permite_descuento, descuento_maximo,
         color_pos, orden_pos, tecla_rapida, notas_internas, activo
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
     `, [
       id, d.empresa_id, d.categoria_id || null, d.codigo_barras, d.codigo_interno, d.codigo_sat,
       d.nombre, d.nombre_corto, d.nombre_pos, d.nombre_ticket, d.descripcion,
@@ -219,24 +246,43 @@ app.post('/api/productos', async (req, res) => {
       d.unidad_compra || 'PZ', d.unidad_venta || 'PZ', d.factor_conversion || 1,
       d.unidad_inventario_id || 'PZ', d.factor_venta || 1,
       d.costo_compra || 0, d.costo || 0, d.precio1 || 0, d.precio2 || 0, d.precio3 || 0, d.precio4 || 0, d.precio_minimo || 0,
-      d.iva || 16, d.ieps || 0, d.precio_incluye_impuesto || 'Y',
+      d.precio_incluye_impuesto || 'Y',
       d.stock_minimo || 0, d.stock_maximo || 0, d.punto_reorden || 0, d.ubicacion_almacen,
       d.maneja_lotes || 'N', d.maneja_caducidad || 'N', d.maneja_series || 'N', d.dias_caducidad || 0,
       d.es_inventariable || 'Y', d.es_vendible || 'Y', d.es_comprable || 'Y', d.mostrar_pos || 'Y',
       d.permite_descuento || 'Y', d.descuento_maximo || 100,
       d.color_pos, d.orden_pos || 0, d.tecla_rapida, d.notas_internas
     ]);
+    
+    // Insertar impuestos si vienen
+    if (d.impuestos && d.impuestos.length > 0) {
+      for (const impuesto_id of d.impuestos) {
+        await conn.query(
+          'INSERT INTO producto_impuesto (producto_id, impuesto_id) VALUES (?, ?)',
+          [id, impuesto_id]
+        );
+      }
+    }
+    
+    await conn.commit();
     res.json({ success: true, id, producto_id: id });
   } catch (e) {
+    await conn.rollback();
     console.error('Error crear producto:', e);
     res.status(500).json({ success: false, error: e.message });
+  } finally {
+    conn.release();
   }
 });
 
 app.put('/api/productos/:id', async (req, res) => {
+  const conn = await db.getConnection();
   try {
+    await conn.beginTransaction();
+    
     const d = req.body;
-    await db.query(`
+    
+    await conn.query(`
       UPDATE productos SET 
         categoria_id=?, codigo_barras=?, codigo_interno=?, codigo_sat=?,
         nombre=?, nombre_corto=?, nombre_pos=?, nombre_ticket=?, descripcion=?,
@@ -244,7 +290,7 @@ app.put('/api/productos/:id', async (req, res) => {
         unidad_compra=?, unidad_venta=?, factor_conversion=?, 
         unidad_inventario_id=?, factor_venta=?,
         costo_compra=?, costo=?, precio1=?, precio2=?, precio3=?, precio4=?, precio_minimo=?,
-        iva=?, ieps=?, precio_incluye_impuesto=?,
+        precio_incluye_impuesto=?,
         stock_minimo=?, stock_maximo=?, punto_reorden=?, ubicacion_almacen=?,
         maneja_lotes=?, maneja_caducidad=?, maneja_series=?, dias_caducidad=?,
         es_inventariable=?, es_vendible=?, es_comprable=?, mostrar_pos=?,
@@ -258,7 +304,7 @@ app.put('/api/productos/:id', async (req, res) => {
       d.unidad_compra, d.unidad_venta, d.factor_conversion,
       d.unidad_inventario_id, d.factor_venta,
       d.costo_compra, d.costo, d.precio1, d.precio2, d.precio3, d.precio4, d.precio_minimo,
-      d.iva || 16, d.ieps || 0, d.precio_incluye_impuesto,
+      d.precio_incluye_impuesto,
       d.stock_minimo, d.stock_maximo, d.punto_reorden, d.ubicacion_almacen,
       d.maneja_lotes, d.maneja_caducidad, d.maneja_series, d.dias_caducidad,
       d.es_inventariable, d.es_vendible, d.es_comprable, d.mostrar_pos,
@@ -266,10 +312,28 @@ app.put('/api/productos/:id', async (req, res) => {
       d.color_pos, d.orden_pos, d.tecla_rapida, d.notas_internas, d.activo || 'Y',
       req.params.id
     ]);
+    
+    // Actualizar impuestos si vienen
+    if (d.impuestos !== undefined) {
+      await conn.query('DELETE FROM producto_impuesto WHERE producto_id = ?', [req.params.id]);
+      if (d.impuestos && d.impuestos.length > 0) {
+        for (const impuesto_id of d.impuestos) {
+          await conn.query(
+            'INSERT INTO producto_impuesto (producto_id, impuesto_id) VALUES (?, ?)',
+            [req.params.id, impuesto_id]
+          );
+        }
+      }
+    }
+    
+    await conn.commit();
     res.json({ success: true });
   } catch (e) {
+    await conn.rollback();
     console.error('Error actualizar producto:', e);
     res.status(500).json({ success: false, error: e.message });
+  } finally {
+    conn.release();
   }
 });
 
@@ -375,18 +439,24 @@ app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
     
     const [productos] = await db.query(`
       SELECT p.*, c.nombre as categoria_nombre, c.color as categoria_color,
-             COALESCE(i.stock, 0) as stock
+             COALESCE(inv.stock, 0) as stock,
+             COALESCE(imp.tasa_total, 0) as tasa_impuesto
       FROM productos p
       LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
-      LEFT JOIN inventario i ON p.producto_id = i.producto_id
+      LEFT JOIN inventario inv ON p.producto_id = inv.producto_id
+      LEFT JOIN (
+        SELECT pi.producto_id, SUM(i.valor) as tasa_total
+        FROM producto_impuesto pi
+        JOIN impuestos i ON pi.impuesto_id = i.impuesto_id AND i.activo = 'Y' AND i.aplica_ventas = 'Y'
+        GROUP BY pi.producto_id
+      ) imp ON p.producto_id = imp.producto_id
       WHERE p.empresa_id = ? AND p.activo = 'Y'
       ORDER BY p.nombre
     `, [empresaID]);
     
     productos.forEach(p => {
-      const iva = parseFloat(p.iva || 16);
-      const ieps = parseFloat(p.ieps || 0);
-      const factor = p.precio_incluye_impuesto === 'Y' ? 1 : (1 + (iva + ieps) / 100);
+      const tasa = parseFloat(p.tasa_impuesto) || 0;
+      const factor = p.precio_incluye_impuesto === 'Y' ? 1 : (1 + tasa / 100);
       
       p.precio_venta = Math.round((parseFloat(p.precio1) || 0) * factor * 100) / 100;
       p.precio_venta2 = Math.round((parseFloat(p.precio2) || 0) * factor * 100) / 100;
