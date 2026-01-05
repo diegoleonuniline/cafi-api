@@ -143,7 +143,113 @@ app.get('/api/productos/:productoID/impuestos', async (req, res) => {
 });
 
 
+// ==================== IMPUESTOS CRUD COMPLETO ====================
 
+// Obtener TODOS los impuestos (incluyendo inactivos)
+app.get('/api/impuestos/:empresaID/todos', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM impuestos WHERE empresa_id = ? ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, impuestos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Crear impuesto
+app.post('/api/impuestos', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('IMP');
+    await db.query(`
+      INSERT INTO impuestos (impuesto_id, empresa_id, nombre, tipo, valor, aplica_ventas, aplica_compras, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.nombre, d.tipo || 'PORCENTAJE', d.valor, d.aplica_ventas || 'Y', d.aplica_compras || 'Y']);
+    res.json({ success: true, id, impuesto_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Actualizar impuesto
+app.put('/api/impuestos/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE impuestos SET nombre=?, tipo=?, valor=?, aplica_ventas=?, aplica_compras=?
+      WHERE impuesto_id=?
+    `, [d.nombre, d.tipo, d.valor, d.aplica_ventas, d.aplica_compras, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Eliminar impuesto (soft delete)
+app.delete('/api/impuestos/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE impuestos SET activo = "N" WHERE impuesto_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== MÉTODOS DE PAGO CRUD COMPLETO ====================
+
+// Obtener TODOS los métodos (incluyendo inactivos)
+app.get('/api/metodos-pago/:empresaID/todos', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM metodos_pago WHERE empresa_id = ? ORDER BY orden, nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, metodos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Crear método de pago
+app.post('/api/metodos-pago', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('MP');
+    await db.query(`
+      INSERT INTO metodos_pago (metodo_pago_id, empresa_id, nombre, icono, clave_sat, requiere_referencia, orden, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.nombre, d.icono || 'fa-money-bill-wave', d.clave_sat, d.requiere_referencia || 'N', d.orden || 0]);
+    res.json({ success: true, id, metodo_pago_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Actualizar método de pago
+app.put('/api/metodos-pago/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE metodos_pago SET nombre=?, icono=?, clave_sat=?, requiere_referencia=?, orden=?
+      WHERE metodo_pago_id=?
+    `, [d.nombre, d.icono, d.clave_sat, d.requiere_referencia, d.orden, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Eliminar método de pago (soft delete)
+app.delete('/api/metodos-pago/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE metodos_pago SET activo = "N" WHERE metodo_pago_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 // ==================== CATEGORÍAS ====================
 
 app.get('/api/categorias/:empresaID', async (req, res) => {
