@@ -1191,3 +1191,41 @@ app.get('/health', async (req, res) => {
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
+
+// Validar clave de administrador (para cualquier acción)
+app.post('/api/auth/validar-admin', async (req, res) => {
+    try {
+        const { empresa_id, password } = req.body;
+        
+        if (!password) {
+            return res.json({ success: false, error: 'Clave requerida' });
+        }
+        
+        // Buscar usuarios admin de la empresa
+        const [admins] = await db.query(`
+            SELECT usuario_id, nombre, password 
+            FROM usuarios 
+            WHERE empresa_id = ? 
+            AND rol IN ('ADMIN', 'SUPERADMIN', 'GERENTE') 
+            AND activo = 'Y'
+        `, [empresa_id]);
+        
+        // Verificar si algún admin tiene esa clave
+        for (const admin of admins) {
+            // Comparar contraseña (ajusta según tu método de hash)
+            if (admin.password === password) {
+                return res.json({ 
+                    success: true, 
+                    admin: admin.nombre,
+                    usuario_id: admin.usuario_id
+                });
+            }
+        }
+        
+        res.json({ success: false, error: 'Clave incorrecta' });
+        
+    } catch (error) {
+        console.error('Error validando admin:', error);
+        res.status(500).json({ success: false, error: 'Error del servidor' });
+    }
+});
