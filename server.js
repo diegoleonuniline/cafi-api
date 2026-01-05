@@ -1163,3 +1163,24 @@ app.get('/health', async (req, res) => {
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
+// Reabrir turno para reconteo (requiere autorización admin)
+app.post('/api/turnos/reabrir/:turnoID', async (req, res) => {
+  try {
+    const { turnoID } = req.params;
+    const { autorizado_por } = req.body;
+    
+    await db.query(`
+      UPDATE turnos SET 
+        estado = 'ABIERTO',
+        fecha_cierre = NULL,
+        efectivo_declarado = NULL,
+        diferencia = NULL,
+        observaciones = CONCAT(COALESCE(observaciones, ''), ' [REABIERTO por ', ?, ' el ', NOW(), ']')
+      WHERE turno_id = ?
+    `, [autorizado_por, turnoID]);
+    
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
