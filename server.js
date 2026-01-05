@@ -828,3 +828,287 @@ app.get('/health', async (req, res) => {
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
+
+// ==================== TURNOS ====================
+// Verificar turno activo
+app.get('/api/turnos/activo/:sucursalID/:usuarioID', async (req, res) => {
+  try {
+    const { sucursalID, usuarioID } = req.params;
+    const [turnos] = await db.query(`
+      SELECT t.*, u.nombre as usuario_nombre
+      FROM turnos t
+      JOIN usuarios u ON t.usuario_id = u.usuario_id
+      WHERE t.sucursal_id = ? AND t.estado = 'ABIERTO'
+      ORDER BY t.fecha_apertura DESC
+      LIMIT 1
+    `, [sucursalID]);
+    
+    if (turnos.length > 0) {
+      res.json({ success: true, turno: turnos[0], activo: true });
+    } else {
+      res.json({ success: true, turno: null, activo: false });
+    }
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Abrir turno
+app.post('/api/turnos/abrir', async (req, res) => {
+  try {
+    const { empresa_id, sucursal_id, caja_id, usuario_id, saldo_inicial } = req.body;
+    
+    const [abiertos] = await db.query(
+      'SELECT turno_id FROM turnos WHERE sucursal_id = ? AND estado = "ABIERTO"',
+      [sucursal_id]
+    );
+    
+    if (abiertos.length > 0) {
+      return res.status(400).json({ success: false, error: 'Ya existe un turno abierto en esta sucursal' });
+    }
+    
+    const id = generarID('TUR');
+    await db.query(`
+      INSERT INTO turnos (turno_id, empresa_id, sucursal_id, caja_id, usuario_id, fecha_apertura, saldo_inicial, estado)
+      VALUES (?, ?, ?, ?, ?, NOW(), ?, 'ABIERTO')
+    `, [id, empresa_id, sucursal_id, caja_id || null, usuario_id, saldo_inicial || 0]);
+    
+    res.json({ success: true, turno_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Cerrar turno
+app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    
+    const { turnoID } = req.params;
+    const { efectivo_declarado, observaciones, cerrado_por } = req.body;
+    
+    const [turnos] = await conn.query('SELECT * FROM turnos WHERE turno_id = ?', [turnoID]);
+    if (turnos.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Turno no encontrado' });
+    }
+    
+    const turno = turnos[0];
+    
+    // Calcular ventas del turno
+    const [ventas] = await conn.query(`
+      SELECT 
+        COUNT(CASE WHEN estatus = 'PAGADA' THEN 1 END) as cantidad_ventas,
+        COALESCE(SUM(CASE WHEN estatus = 'PAGADA' THEN total ELSE 0 END), 0) as total_ventas,
+        COUNT(CASE WHEN estatus = 'CANCELADA' THEN 1 END) as cantidad_canceladas,
+        COALESCE(SUM(CASE WHEN estatus = 'CANCELADA' THEN total ELSE 0 END), 0) as ventas_canceladas,
+        COALESCE(SUM(CASE WHEN estatus = 'PAGADA' THEN (subtotal * descuento / 100) ELSE 0 END), 0) as descuentos_otorgados
+      FROM ventas 
+      WHERE sucursal_id = ? 
+        AND fecha_hora >= ? 
+        AND fecha_hora <= NOW()
+    `, [turno.sucursal_id, turno.fecha_apertura]);
+    
+    // Calcular por método de pago
+    const [pagos] = await conn.query(`
+      SELECT 
+        COALESCE(mp.tipo, 'EFECTIVO') as tipo,
+        COALESCE(SUM(p.monto), 0) as total
+      FROM pagos p
+      LEFT JOIN metodos_pago mp ON p.metodo_pago_id = mp.metodo_pago_id
+      JOIN ventas v ON p.venta_id = v.venta_id
+      WHERE v.sucursal_id = ? 
+        AND v.fecha_hora >= ?
+        AND v.fecha_hora <= NOW()
+        AND v.estatus = 'PAGADA'
+      GROUP BY mp.tipo
+    `, [turno.sucursal_id, turno.fecha_apertura]);
+    
+    let ventasEfectivo = 0, ventasTarjeta = 0, ventasTransferencia = 0, ventasOtros = 0;
+    pagos.forEach(p => {
+      const tipo = (p.tipo || '').toUpperCase();
+      if (tipo === 'EFECTIVO') ventasEfectivo = parseFloat(p.total);
+      else if (tipo === 'TARJETA') ventasTarjeta = parseFloat(p.total);
+      else if (tipo === 'TRANSFERENCIA') ventasTransferencia = parseFloat(p.total);
+      else ventasOtros += parseFloat(p.total);
+    });
+    
+    // Ventas a crédito
+    const [creditos] = await conn.query(`
+      SELECT COALESCE(SUM(total), 0) as total
+      FROM ventas 
+      WHERE sucursal_id = ? 
+        AND fecha_hora >= ?
+        AND tipo_venta = 'CREDITO'
+        AND estatus = 'PAGADA'
+    `, [turno.sucursal_id, turno.fecha_apertura]);
+    const ventasCredito = parseFloat(creditos[0].total) || 0;
+    
+    // Movimientos de caja
+    const [movimientos] = await conn.query(`
+      SELECT tipo, COALESCE(SUM(monto), 0) as total
+      FROM movimientos_caja
+      WHERE turno_id = ?
+      GROUP BY tipo
+    `, [turnoID]);
+    
+    let ingresos = 0, egresos = 0;
+    movimientos.forEach(m => {
+      if (m.tipo === 'INGRESO') ingresos = parseFloat(m.total);
+      else egresos = parseFloat(m.total);
+    });
+    
+    // Calcular efectivo esperado
+    const saldoInicial = parseFloat(turno.saldo_inicial) || 0;
+    const efectivoEsperado = saldoInicial + ventasEfectivo + ingresos - egresos;
+    const efectivoDeclaradoNum = parseFloat(efectivo_declarado) || 0;
+    const diferencia = efectivoDeclaradoNum - efectivoEsperado;
+    const totalVentas = ventasEfectivo + ventasTarjeta + ventasTransferencia + ventasCredito + ventasOtros;
+    
+    // Actualizar turno
+    await conn.query(`
+      UPDATE turnos SET 
+        fecha_cierre = NOW(),
+        ventas_efectivo = ?,
+        ventas_tarjeta = ?,
+        ventas_transferencia = ?,
+        ventas_credito = ?,
+        ventas_otros = ?,
+        total_ventas = ?,
+        cantidad_ventas = ?,
+        ventas_canceladas = ?,
+        cantidad_canceladas = ?,
+        descuentos_otorgados = ?,
+        ingresos = ?,
+        egresos = ?,
+        efectivo_esperado = ?,
+        efectivo_declarado = ?,
+        diferencia = ?,
+        observaciones = ?,
+        cerrado_por = ?,
+        estado = 'CERRADO'
+      WHERE turno_id = ?
+    `, [
+      ventasEfectivo, ventasTarjeta, ventasTransferencia, ventasCredito, ventasOtros,
+      totalVentas, ventas[0].cantidad_ventas, 
+      ventas[0].ventas_canceladas, ventas[0].cantidad_canceladas,
+      ventas[0].descuentos_otorgados,
+      ingresos, egresos, efectivoEsperado, efectivoDeclaradoNum, diferencia,
+      observaciones, cerrado_por, turnoID
+    ]);
+    
+    await conn.commit();
+    
+    res.json({
+      success: true,
+      corte: {
+        saldo_inicial: saldoInicial,
+        ventas_efectivo: ventasEfectivo,
+        ventas_tarjeta: ventasTarjeta,
+        ventas_transferencia: ventasTransferencia,
+        ventas_credito: ventasCredito,
+        ventas_otros: ventasOtros,
+        total_ventas: totalVentas,
+        cantidad_ventas: ventas[0].cantidad_ventas,
+        cantidad_canceladas: ventas[0].cantidad_canceladas,
+        descuentos_otorgados: ventas[0].descuentos_otorgados,
+        ingresos,
+        egresos,
+        efectivo_esperado: efectivoEsperado,
+        efectivo_declarado: efectivoDeclaradoNum,
+        diferencia
+      }
+    });
+  } catch (e) {
+    await conn.rollback();
+    console.error('Error cerrar turno:', e);
+    res.status(500).json({ success: false, error: e.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// Resumen del turno actual
+app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
+  try {
+    const { turnoID } = req.params;
+    
+    const [turnos] = await db.query('SELECT * FROM turnos WHERE turno_id = ?', [turnoID]);
+    if (turnos.length === 0) {
+      return res.status(404).json({ success: false, error: 'Turno no encontrado' });
+    }
+    
+    const turno = turnos[0];
+    
+    const [ventas] = await db.query(`
+      SELECT 
+        COUNT(CASE WHEN estatus = 'PAGADA' THEN 1 END) as cantidad_ventas,
+        COALESCE(SUM(CASE WHEN estatus = 'PAGADA' THEN total ELSE 0 END), 0) as total_ventas
+      FROM ventas 
+      WHERE sucursal_id = ? AND fecha_hora >= ?
+    `, [turno.sucursal_id, turno.fecha_apertura]);
+    
+    const [movimientos] = await db.query(`
+      SELECT tipo, COALESCE(SUM(monto), 0) as total
+      FROM movimientos_caja WHERE turno_id = ? GROUP BY tipo
+    `, [turnoID]);
+    
+    let ingresos = 0, egresos = 0;
+    movimientos.forEach(m => {
+      if (m.tipo === 'INGRESO') ingresos = parseFloat(m.total);
+      else egresos = parseFloat(m.total);
+    });
+    
+    res.json({
+      success: true,
+      turno,
+      ventas: ventas[0],
+      ingresos,
+      egresos
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== MOVIMIENTOS DE CAJA ====================
+app.get('/api/movimientos-caja/:turnoID', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT m.*, u.nombre as usuario_nombre
+      FROM movimientos_caja m
+      JOIN usuarios u ON m.usuario_id = u.usuario_id
+      WHERE m.turno_id = ?
+      ORDER BY m.fecha_hora DESC
+    `, [req.params.turnoID]);
+    res.json({ success: true, movimientos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/movimientos-caja', async (req, res) => {
+  try {
+    const { turno_id, empresa_id, sucursal_id, usuario_id, tipo, monto, concepto, referencia, notas } = req.body;
+    
+    const [turnos] = await db.query(
+      'SELECT estado FROM turnos WHERE turno_id = ?',
+      [turno_id]
+    );
+    
+    if (turnos.length === 0 || turnos[0].estado !== 'ABIERTO') {
+      return res.status(400).json({ success: false, error: 'El turno no está abierto' });
+    }
+    
+    const id = generarID('MOV');
+    await db.query(`
+      INSERT INTO movimientos_caja (movimiento_id, turno_id, empresa_id, sucursal_id, usuario_id, tipo, monto, concepto, referencia, notas, fecha_hora)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+    `, [id, turno_id, empresa_id, sucursal_id, usuario_id, tipo, monto, concepto, referencia || null, notas || null]);
+    
+    res.json({ success: true, movimiento_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
