@@ -724,6 +724,7 @@ app.get('/api/ventas/detalle/:id', async (req, res) => {
   }
 });
 
+// POST VENTAS - CON TURNO_ID EN PAGOS
 app.post('/api/ventas', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -750,31 +751,33 @@ app.post('/api/ventas', async (req, res) => {
       d.subtotal, d.descuento || 0, d.total, d.pagado, d.cambio
     ]);
     
-for (const item of d.items) {
-  const detalleId = generarID('DET');
-  const subtotalItem = item.precio_unitario * item.cantidad;
-  const descuentoPct = item.descuento || 0;
-  const descuentoMonto = subtotalItem * descuentoPct / 100;
-  
-  await conn.query(`
-    INSERT INTO detalle_venta (
-      detalle_id, venta_id, producto_id, descripcion, cantidad, unidad_id,
-      precio_lista, precio_unitario, descuento_pct, descuento_monto, subtotal
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, [
-    detalleId, ventaId, item.producto_id, item.descripcion, item.cantidad,
-    item.unidad_id || 'PZ', item.precio_unitario, item.precio_unitario, 
-    descuentoPct, descuentoMonto, item.subtotal
-  ]);
-}
+    // DETALLE DE VENTA
+    for (const item of d.items) {
+      const detalleId = generarID('DET');
+      const subtotalItem = item.precio_unitario * item.cantidad;
+      const descuentoPct = item.descuento || 0;
+      const descuentoMonto = subtotalItem * descuentoPct / 100;
+      
+      await conn.query(`
+        INSERT INTO detalle_venta (
+          detalle_id, venta_id, producto_id, descripcion, cantidad, unidad_id,
+          precio_lista, precio_unitario, descuento_pct, descuento_monto, subtotal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        detalleId, ventaId, item.producto_id, item.descripcion, item.cantidad,
+        item.unidad_id || 'PZ', item.precio_unitario, item.precio_unitario, 
+        descuentoPct, descuentoMonto, item.subtotal
+      ]);
+    }
     
+    // PAGOS - CON TURNO_ID
     if (d.pagos && d.pagos.length > 0) {
       for (const pago of d.pagos) {
         const pagoId = generarID('PAG');
         await conn.query(`
-          INSERT INTO pagos (pago_id, empresa_id, sucursal_id, venta_id, metodo_pago_id, monto, usuario_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `, [pagoId, d.empresa_id, d.sucursal_id, ventaId, pago.metodo_pago_id, pago.monto, d.usuario_id]);
+          INSERT INTO pagos (pago_id, empresa_id, sucursal_id, venta_id, turno_id, metodo_pago_id, monto, usuario_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [pagoId, d.empresa_id, d.sucursal_id, ventaId, d.turno_id, pago.metodo_pago_id, pago.monto, d.usuario_id]);
       }
     }
     
@@ -828,7 +831,6 @@ app.get('/api/turnos/activo/:sucursalID/:usuarioID', async (req, res) => {
   }
 });
 
-// Abrir turno - FIX caja_id opcional
 app.post('/api/turnos/abrir', async (req, res) => {
   try {
     const { empresa_id, sucursal_id, caja_id, usuario_id, saldo_inicial } = req.body;
@@ -844,7 +846,6 @@ app.post('/api/turnos/abrir', async (req, res) => {
     
     const id = generarID('TUR');
     
-    // caja_id es opcional - usar NULL si no existe
     await db.query(`
       INSERT INTO turnos (turno_id, empresa_id, sucursal_id, caja_id, usuario_id, fecha_apertura, saldo_inicial, estado)
       VALUES (?, ?, ?, ?, ?, NOW(), ?, 'ABIERTO')
@@ -857,6 +858,7 @@ app.post('/api/turnos/abrir', async (req, res) => {
   }
 });
 
+// RESUMEN TURNO - CONSULTA PAGOS POR TURNO_ID
 app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
   try {
     const { turnoID } = req.params;
@@ -880,7 +882,7 @@ app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
       WHERE turno_id = ?
     `, [turnoID]);
     
-    // Desglose por método de pago - Query corregido
+    // PAGOS POR MÉTODO - DIRECTO DE TABLA PAGOS CON TURNO_ID
     const [pagosPorMetodo] = await db.query(`
       SELECT 
         mp.metodo_pago_id,
@@ -889,11 +891,7 @@ app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
         COUNT(p.pago_id) as cantidad_pagos,
         COALESCE(SUM(p.monto), 0) as total
       FROM metodos_pago mp
-      LEFT JOIN (
-        SELECT p.* FROM pagos p
-        JOIN ventas v ON p.venta_id = v.venta_id
-        WHERE v.turno_id = ? AND v.estatus = 'PAGADA'
-      ) p ON mp.metodo_pago_id = p.metodo_pago_id
+      LEFT JOIN pagos p ON mp.metodo_pago_id = p.metodo_pago_id AND p.turno_id = ? AND p.estatus = 'APLICADO'
       WHERE mp.empresa_id = ? AND mp.activo = 'Y'
       GROUP BY mp.metodo_pago_id, mp.nombre, mp.tipo
       ORDER BY mp.orden, mp.nombre
@@ -916,7 +914,7 @@ app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
       }
     });
     
-    // Solo el efectivo de las ventas cuenta para el arqueo
+    // Solo el efectivo cuenta para el arqueo
     let efectivoVentas = 0;
     const pagosMapeados = pagosPorMetodo.map(p => {
       const total = parseFloat(p.total) || 0;
@@ -958,6 +956,7 @@ app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
   }
 });
 
+// CERRAR TURNO - CONSULTA PAGOS POR TURNO_ID
 app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -987,24 +986,23 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
       WHERE turno_id = ?
     `, [turnoID]);
     
-    // Pagos por método
+    // PAGOS POR TIPO - DIRECTO DE TABLA PAGOS CON TURNO_ID
     const [pagos] = await conn.query(`
       SELECT 
         COALESCE(mp.tipo, 'EFECTIVO') as tipo,
         COALESCE(SUM(p.monto), 0) as total
       FROM pagos p
-      JOIN ventas v ON p.venta_id = v.venta_id
-      LEFT JOIN metodos_pago mp ON p.metodo_pago_id = mp.metodo_pago_id
-      WHERE v.turno_id = ? AND v.estatus = 'PAGADA'
+      JOIN metodos_pago mp ON p.metodo_pago_id = mp.metodo_pago_id
+      WHERE p.turno_id = ? AND p.estatus = 'APLICADO'
       GROUP BY mp.tipo
     `, [turnoID]);
     
-    let ventasEfectivo = 0, ventasTarjeta = 0, ventasTransferencia = 0, ventasCredito = 0, ventasOtros = 0;
+    let ventasEfectivo = 0, ventasTarjeta = 0, ventasTransferencia = 0, ventasOtros = 0;
     pagos.forEach(p => {
       const tipo = (p.tipo || 'EFECTIVO').toUpperCase();
       const total = parseFloat(p.total) || 0;
       if (tipo === 'EFECTIVO') ventasEfectivo = total;
-      else if (tipo === 'TARJETA') ventasTarjeta = total;
+      else if (tipo === 'TARJETA' || tipo === 'TARJETA_DEBITO' || tipo === 'TARJETA_CREDITO') ventasTarjeta += total;
       else if (tipo === 'TRANSFERENCIA') ventasTransferencia = total;
       else ventasOtros += total;
     });
@@ -1015,7 +1013,7 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
       FROM ventas 
       WHERE turno_id = ? AND tipo_venta = 'CREDITO' AND estatus = 'PAGADA'
     `, [turnoID]);
-    ventasCredito = parseFloat(creditos[0].total) || 0;
+    const ventasCredito = parseFloat(creditos[0].total) || 0;
     
     // Movimientos de caja
     const [movimientos] = await conn.query(`
@@ -1116,6 +1114,27 @@ app.post('/api/turnos/validar-admin', async (req, res) => {
   }
 });
 
+app.post('/api/turnos/reabrir/:turnoID', async (req, res) => {
+  try {
+    const { turnoID } = req.params;
+    const { autorizado_por } = req.body;
+    
+    await db.query(`
+      UPDATE turnos SET 
+        estado = 'ABIERTO',
+        fecha_cierre = NULL,
+        efectivo_declarado = NULL,
+        diferencia = NULL,
+        observaciones = CONCAT(COALESCE(observaciones, ''), ' [REABIERTO por ', ?, ' el ', NOW(), ']')
+      WHERE turno_id = ?
+    `, [autorizado_por, turnoID]);
+    
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ==================== MOVIMIENTOS DE CAJA ====================
 
 app.get('/api/movimientos-caja/:turnoID', async (req, res) => {
@@ -1172,24 +1191,3 @@ app.get('/health', async (req, res) => {
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
-// Reabrir turno para reconteo (requiere autorización admin)
-app.post('/api/turnos/reabrir/:turnoID', async (req, res) => {
-  try {
-    const { turnoID } = req.params;
-    const { autorizado_por } = req.body;
-    
-    await db.query(`
-      UPDATE turnos SET 
-        estado = 'ABIERTO',
-        fecha_cierre = NULL,
-        efectivo_declarado = NULL,
-        diferencia = NULL,
-        observaciones = CONCAT(COALESCE(observaciones, ''), ' [REABIERTO por ', ?, ' el ', NOW(), ']')
-      WHERE turno_id = ?
-    `, [autorizado_por, turnoID]);
-    
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
