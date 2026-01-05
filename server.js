@@ -590,6 +590,49 @@ app.put('/api/ventas/cancelar/:id', async (req, res) => {
   }
 });
 
+// ==================== RESUMEN VENTAS (DASHBOARD) ====================
+
+app.get('/api/ventas/resumen/:empresaID/:sucursalID', async (req, res) => {
+  try {
+    const { empresaID, sucursalID } = req.params;
+    const hoy = new Date().toISOString().split('T')[0];
+    
+    // Total y tickets de hoy
+    const [resumen] = await db.query(`
+      SELECT 
+        COALESCE(SUM(total), 0) as total_hoy,
+        COUNT(*) as tickets_hoy
+      FROM ventas 
+      WHERE empresa_id = ? 
+        AND sucursal_id = ?
+        AND DATE(fecha_hora) = ?
+        AND estatus = 'PAGADA'
+    `, [empresaID, sucursalID, hoy]);
+    
+    // Últimas 10 ventas
+    const [ultimas] = await db.query(`
+      SELECT v.venta_id, v.folio, v.total, v.fecha_hora, v.estatus,
+             c.nombre as cliente_nombre
+      FROM ventas v
+      LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
+      WHERE v.empresa_id = ? AND v.sucursal_id = ?
+      ORDER BY v.fecha_hora DESC
+      LIMIT 10
+    `, [empresaID, sucursalID]);
+    
+    res.json({
+      success: true,
+      total_hoy: resumen[0].total_hoy,
+      tickets_hoy: resumen[0].tickets_hoy,
+      ultimas
+    });
+  } catch (e) {
+    console.error('Error resumen ventas:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
 // ==================== HEALTH ====================
 
 app.get('/health', async (req, res) => {
