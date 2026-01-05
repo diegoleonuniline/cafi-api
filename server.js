@@ -823,6 +823,7 @@ app.get('/api/turnos/activo/:sucursalID/:usuarioID', async (req, res) => {
   }
 });
 
+// Abrir turno - FIX caja_id opcional
 app.post('/api/turnos/abrir', async (req, res) => {
   try {
     const { empresa_id, sucursal_id, caja_id, usuario_id, saldo_inicial } = req.body;
@@ -837,13 +838,16 @@ app.post('/api/turnos/abrir', async (req, res) => {
     }
     
     const id = generarID('TUR');
+    
+    // caja_id es opcional - usar NULL si no existe
     await db.query(`
       INSERT INTO turnos (turno_id, empresa_id, sucursal_id, caja_id, usuario_id, fecha_apertura, saldo_inicial, estado)
       VALUES (?, ?, ?, ?, ?, NOW(), ?, 'ABIERTO')
-    `, [id, empresa_id, sucursal_id, caja_id || 'CAJA-01', usuario_id, saldo_inicial || 0]);
+    `, [id, empresa_id, sucursal_id, caja_id || null, usuario_id, saldo_inicial || 0]);
     
     res.json({ success: true, turno_id: id });
   } catch (e) {
+    console.error('Error abrir turno:', e);
     res.status(500).json({ success: false, error: e.message });
   }
 });
