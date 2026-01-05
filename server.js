@@ -126,6 +126,24 @@ app.get('/api/impuestos/:empresaID', async (req, res) => {
   }
 });
 
+
+//  obtener impuestos de un producto
+
+app.get('/api/productos/:productoID/impuestos', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT i.* FROM producto_impuesto pi
+      JOIN impuestos i ON pi.impuesto_id = i.impuesto_id
+      WHERE pi.producto_id = ?
+    `, [req.params.productoID]);
+    res.json({ success: true, impuestos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
+
 // ==================== CATEGORÍAS ====================
 
 app.get('/api/categorias/:empresaID', async (req, res) => {
