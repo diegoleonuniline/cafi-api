@@ -8,7 +8,13 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors({ origin: '*' }));
+// CORS
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.options('*', cors());
 app.use(express.json());
 
 // DB Pool
@@ -50,41 +56,41 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Usuario no encontrado' });
     }
     
-    const usuario = usuarios[0];
+    const user = usuarios[0];
     
-    if (usuario.contrasena !== password) {
+    if (user.contrasena !== password) {
       return res.status(401).json({ success: false, error: 'Contraseña incorrecta' });
     }
     
-    if (usuario.empresa_activa !== 'Y') {
+    if (user.empresa_activa !== 'Y') {
       return res.status(401).json({ success: false, error: 'Empresa inactiva' });
     }
     
     const token = jwt.sign({
-      usuario_id: usuario.usuario_id,
-      email: usuario.email,
-      nombre: usuario.nombre,
-      rol: usuario.rol,
-      empresa_id: usuario.empresa_id,
-      sucursal_id: usuario.sucursal_id,
-      almacen_id: usuario.almacen_id
+      usuario_id: user.usuario_id,
+      email: user.email,
+      nombre: user.nombre,
+      rol: user.rol,
+      empresa_id: user.empresa_id,
+      sucursal_id: user.sucursal_id,
+      almacen_id: user.almacen_id
     }, process.env.JWT_SECRET, { expiresIn: '24h' });
     
-    await db.query('UPDATE usuarios SET ultimo_acceso = NOW() WHERE usuario_id = ?', [usuario.usuario_id]);
+    await db.query('UPDATE usuarios SET ultimo_acceso = NOW() WHERE usuario_id = ?', [user.usuario_id]);
     
     res.json({
       success: true,
       token,
       usuario: {
-        id: usuario.usuario_id,
-        email: usuario.email,
-        nombre: usuario.nombre,
-        rol: usuario.rol,
-        empresa_id: usuario.empresa_id,
-        empresa_nombre: usuario.empresa_nombre,
-        sucursal_id: usuario.sucursal_id,
-        sucursal_nombre: usuario.sucursal_nombre,
-        almacen_id: usuario.almacen_id
+        id: user.usuario_id,
+        email: user.email,
+        nombre: user.nombre,
+        rol: user.rol,
+        empresa_id: user.empresa_id,
+        empresa_nombre: user.empresa_nombre,
+        sucursal_id: user.sucursal_id,
+        sucursal_nombre: user.sucursal_nombre,
+        almacen_id: user.almacen_id
       }
     });
     
@@ -158,54 +164,33 @@ app.delete('/api/categorias/:id', async (req, res) => {
 
 // ==================== PRODUCTOS ====================
 
-// GET /api/productos/:empresaID - Lista productos con impuestos
 app.get('/api/productos/:empresaID', async (req, res) => {
-    try {
-        const { empresaID } = req.params;
-        
-        const [rows] = await db.query(`
-            SELECT 
-                p.*,
-                c.nombre as categoria_nombre,
-                COALESCE(imp.tasa_total, 0) as tasa_impuesto,
-                GROUP_CONCAT(CONCAT(i.nombre, ':', i.tasa) SEPARATOR ', ') as impuestos_detalle
-            FROM productos p
-            LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
-            LEFT JOIN (
-                SELECT 
-                    pi.producto_id,
-                    SUM(imp.tasa) as tasa_total
-                FROM producto_impuesto pi
-                JOIN impuestos imp ON pi.impuesto_id = imp.impuesto_id
-                WHERE imp.activo = 'Y'
-                GROUP BY pi.producto_id
-            ) imp ON p.producto_id = imp.producto_id
-            LEFT JOIN producto_impuesto pi2 ON p.producto_id = pi2.producto_id
-            LEFT JOIN impuestos i ON pi2.impuesto_id = i.impuesto_id AND i.activo = 'Y'
-            WHERE p.empresa_id = ?
-            GROUP BY p.producto_id
-            ORDER BY p.nombre
-        `, [empresaID]);
-        
-        // Calcular precios finales
-        rows.forEach(p => {
-            const tasa = parseFloat(p.tasa_impuesto) || 0;
-            const incluyeImpuesto = p.precio_incluye_impuesto === 'Y';
-            
-            if (incluyeImpuesto) {
-                p.precio_venta = parseFloat(p.precio1) || 0;
-            } else {
-                p.precio_venta = (parseFloat(p.precio1) || 0) * (1 + tasa / 100);
-            }
-            p.precio_venta = Math.round(p.precio_venta * 100) / 100;
-        });
-        
-        res.json({ success: true, data: rows, productos: rows });
-        
-    } catch (error) {
-        console.error('Error:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
+  try {
+    const [rows] = await db.query(`
+      SELECT p.*, c.nombre as categoria_nombre
+      FROM productos p
+      LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+      WHERE p.empresa_id = ?
+      ORDER BY p.nombre
+    `, [req.params.empresaID]);
+    
+    rows.forEach(p => {
+      const iva = parseFloat(p.iva || 16);
+      const ieps = parseFloat(p.ieps || 0);
+      const precio = parseFloat(p.precio1 || 0);
+      
+      if (p.precio_incluye_impuesto === 'Y') {
+        p.precio_venta = precio;
+      } else {
+        p.precio_venta = precio * (1 + (iva + ieps) / 100);
+      }
+      p.precio_venta = Math.round(p.precio_venta * 100) / 100;
+    });
+    
+    res.json({ success: true, data: rows, productos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
 });
 
 app.post('/api/productos', async (req, res) => {
@@ -220,13 +205,13 @@ app.post('/api/productos', async (req, res) => {
         unidad_compra, unidad_venta, factor_conversion,
         unidad_inventario_id, factor_venta,
         costo_compra, costo, precio1, precio2, precio3, precio4, precio_minimo,
+        iva, ieps, precio_incluye_impuesto,
         stock_minimo, stock_maximo, punto_reorden, ubicacion_almacen,
         maneja_lotes, maneja_caducidad, maneja_series, dias_caducidad,
         es_inventariable, es_vendible, es_comprable, mostrar_pos,
         permite_descuento, descuento_maximo,
-        color_pos, orden_pos, tecla_rapida, notas_internas,
-        precio_incluye_impuesto, activo
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+        color_pos, orden_pos, tecla_rapida, notas_internas, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
     `, [
       id, d.empresa_id, d.categoria_id || null, d.codigo_barras, d.codigo_interno, d.codigo_sat,
       d.nombre, d.nombre_corto, d.nombre_pos, d.nombre_ticket, d.descripcion,
@@ -234,12 +219,12 @@ app.post('/api/productos', async (req, res) => {
       d.unidad_compra || 'PZ', d.unidad_venta || 'PZ', d.factor_conversion || 1,
       d.unidad_inventario_id || 'PZ', d.factor_venta || 1,
       d.costo_compra || 0, d.costo || 0, d.precio1 || 0, d.precio2 || 0, d.precio3 || 0, d.precio4 || 0, d.precio_minimo || 0,
+      d.iva || 16, d.ieps || 0, d.precio_incluye_impuesto || 'Y',
       d.stock_minimo || 0, d.stock_maximo || 0, d.punto_reorden || 0, d.ubicacion_almacen,
       d.maneja_lotes || 'N', d.maneja_caducidad || 'N', d.maneja_series || 'N', d.dias_caducidad || 0,
       d.es_inventariable || 'Y', d.es_vendible || 'Y', d.es_comprable || 'Y', d.mostrar_pos || 'Y',
       d.permite_descuento || 'Y', d.descuento_maximo || 100,
-      d.color_pos, d.orden_pos || 0, d.tecla_rapida, d.notas_internas,
-      d.precio_incluye_impuesto || 'Y'
+      d.color_pos, d.orden_pos || 0, d.tecla_rapida, d.notas_internas
     ]);
     res.json({ success: true, id, producto_id: id });
   } catch (e) {
@@ -259,13 +244,12 @@ app.put('/api/productos/:id', async (req, res) => {
         unidad_compra=?, unidad_venta=?, factor_conversion=?, 
         unidad_inventario_id=?, factor_venta=?,
         costo_compra=?, costo=?, precio1=?, precio2=?, precio3=?, precio4=?, precio_minimo=?,
-        precio_incluye_impuesto=?,
+        iva=?, ieps=?, precio_incluye_impuesto=?,
         stock_minimo=?, stock_maximo=?, punto_reorden=?, ubicacion_almacen=?,
         maneja_lotes=?, maneja_caducidad=?, maneja_series=?, dias_caducidad=?,
         es_inventariable=?, es_vendible=?, es_comprable=?, mostrar_pos=?,
         permite_descuento=?, descuento_maximo=?,
-        color_pos=?, orden_pos=?, tecla_rapida=?, notas_internas=?,
-        activo=?
+        color_pos=?, orden_pos=?, tecla_rapida=?, notas_internas=?, activo=?
       WHERE producto_id=?
     `, [
       d.categoria_id, d.codigo_barras, d.codigo_interno, d.codigo_sat,
@@ -274,13 +258,12 @@ app.put('/api/productos/:id', async (req, res) => {
       d.unidad_compra, d.unidad_venta, d.factor_conversion,
       d.unidad_inventario_id, d.factor_venta,
       d.costo_compra, d.costo, d.precio1, d.precio2, d.precio3, d.precio4, d.precio_minimo,
-      d.precio_incluye_impuesto,
+      d.iva || 16, d.ieps || 0, d.precio_incluye_impuesto,
       d.stock_minimo, d.stock_maximo, d.punto_reorden, d.ubicacion_almacen,
       d.maneja_lotes, d.maneja_caducidad, d.maneja_series, d.dias_caducidad,
       d.es_inventariable, d.es_vendible, d.es_comprable, d.mostrar_pos,
       d.permite_descuento, d.descuento_maximo,
-      d.color_pos, d.orden_pos, d.tecla_rapida, d.notas_internas,
-      d.activo || 'Y',
+      d.color_pos, d.orden_pos, d.tecla_rapida, d.notas_internas, d.activo || 'Y',
       req.params.id
     ]);
     res.json({ success: true });
@@ -385,70 +368,93 @@ app.get('/api/metodos-pago/:empresaID', async (req, res) => {
 });
 
 // ==================== POS ====================
-// GET /api/pos/cargar/:empresaID/:sucursalID
+
 app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
-    try {
-        const { empresaID, sucursalID } = req.params;
-        
-        // Productos con impuestos
-        const [productos] = await db.query(`
-            SELECT 
-                p.*,
-                c.nombre as categoria_nombre,
-                c.color as categoria_color,
-                COALESCE(i.stock, 0) as stock,
-                COALESCE(imp.tasa_total, 0) as tasa_impuesto
-            FROM productos p
-            LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
-            LEFT JOIN inventario i ON p.producto_id = i.producto_id
-            LEFT JOIN (
-                SELECT 
-                    pi.producto_id,
-                    SUM(COALESCE(im.valor, 0)) as tasa_total
-                FROM producto_impuesto pi
-                LEFT JOIN impuestos im ON pi.impuesto_id = im.impuesto_id
-                WHERE im.activo = 'Y' AND im.aplica_ventas = 'Y'
-                GROUP BY pi.producto_id
-            ) imp ON p.producto_id = imp.producto_id
-            WHERE p.empresa_id = ? AND p.activo = 'Y'
-            ORDER BY p.nombre
-        `, [empresaID]);
-        
-        // Calcular precios con impuestos
-        productos.forEach(p => {
-            const tasa = parseFloat(p.tasa_impuesto) || 0;
-            const incluyeImpuesto = p.precio_incluye_impuesto === 'Y';
-            const factor = incluyeImpuesto ? 1 : (1 + tasa / 100);
-            
-            p.precio_venta = Math.round((parseFloat(p.precio1) || 0) * factor * 100) / 100;
-            p.precio_venta2 = Math.round((parseFloat(p.precio2) || 0) * factor * 100) / 100;
-            p.precio_venta3 = Math.round((parseFloat(p.precio3) || 0) * factor * 100) / 100;
-            p.precio_venta4 = Math.round((parseFloat(p.precio4) || 0) * factor * 100) / 100;
-        });
-        
-        const [categorias] = await db.query(
-            'SELECT * FROM categorias WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
-            [empresaID]
-        );
-        
-        const [clientes] = await db.query(
-            'SELECT * FROM clientes WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
-            [empresaID]
-        );
-        
-        const [metodos] = await db.query(
-            'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
-            [empresaID]
-        );
-        
-        res.json({ success: true, productos, categorias, clientes, metodos });
-        
-    } catch (error) {
-        console.error('Error cargando POS:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
+  try {
+    const { empresaID, sucursalID } = req.params;
+    
+    const [productos] = await db.query(`
+      SELECT p.*, c.nombre as categoria_nombre, c.color as categoria_color,
+             COALESCE(i.stock, 0) as stock
+      FROM productos p
+      LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+      LEFT JOIN inventario i ON p.producto_id = i.producto_id
+      WHERE p.empresa_id = ? AND p.activo = 'Y'
+      ORDER BY p.nombre
+    `, [empresaID]);
+    
+    productos.forEach(p => {
+      const iva = parseFloat(p.iva || 16);
+      const ieps = parseFloat(p.ieps || 0);
+      const factor = p.precio_incluye_impuesto === 'Y' ? 1 : (1 + (iva + ieps) / 100);
+      
+      p.precio_venta = Math.round((parseFloat(p.precio1) || 0) * factor * 100) / 100;
+      p.precio_venta2 = Math.round((parseFloat(p.precio2) || 0) * factor * 100) / 100;
+      p.precio_venta3 = Math.round((parseFloat(p.precio3) || 0) * factor * 100) / 100;
+      p.precio_venta4 = Math.round((parseFloat(p.precio4) || 0) * factor * 100) / 100;
+    });
+    
+    const [categorias] = await db.query(
+      'SELECT * FROM categorias WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      [empresaID]
+    );
+    
+    const [clientes] = await db.query(
+      'SELECT * FROM clientes WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      [empresaID]
+    );
+    
+    const [metodos] = await db.query(
+      'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      [empresaID]
+    );
+    
+    res.json({ success: true, productos, categorias, clientes, metodos });
+  } catch (e) {
+    console.error('Error cargando POS:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
 });
+
 // ==================== VENTAS ====================
+
+app.get('/api/ventas/resumen/:empresaID/:sucursalID', async (req, res) => {
+  try {
+    const { empresaID, sucursalID } = req.params;
+    const hoy = new Date().toISOString().split('T')[0];
+    
+    const [resumen] = await db.query(`
+      SELECT 
+        COALESCE(SUM(total), 0) as total_hoy,
+        COUNT(*) as tickets_hoy
+      FROM ventas 
+      WHERE empresa_id = ? 
+        AND sucursal_id = ?
+        AND DATE(fecha_hora) = ?
+        AND estatus = 'PAGADA'
+    `, [empresaID, sucursalID, hoy]);
+    
+    const [ultimas] = await db.query(`
+      SELECT v.venta_id, v.folio, v.total, v.fecha_hora, v.estatus,
+             c.nombre as cliente_nombre
+      FROM ventas v
+      LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
+      WHERE v.empresa_id = ? AND v.sucursal_id = ?
+      ORDER BY v.fecha_hora DESC
+      LIMIT 10
+    `, [empresaID, sucursalID]);
+    
+    res.json({
+      success: true,
+      total_hoy: resumen[0].total_hoy,
+      tickets_hoy: resumen[0].tickets_hoy,
+      ultimas
+    });
+  } catch (e) {
+    console.error('Error resumen ventas:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 app.get('/api/ventas/:empresaID', async (req, res) => {
   try {
@@ -520,14 +526,12 @@ app.post('/api/ventas', async (req, res) => {
     const d = req.body;
     const ventaId = generarID('VTA');
     
-    // Obtener siguiente folio
     const [folioRes] = await conn.query(
       'SELECT COALESCE(MAX(folio), 0) + 1 as siguiente FROM ventas WHERE empresa_id = ? AND serie = ?',
       [d.empresa_id, 'A']
     );
     const folio = folioRes[0].siguiente;
     
-    // Insertar venta
     await conn.query(`
       INSERT INTO ventas (
         venta_id, empresa_id, sucursal_id, almacen_id, usuario_id, cliente_id,
@@ -540,7 +544,6 @@ app.post('/api/ventas', async (req, res) => {
       d.subtotal, d.total, d.pagado, d.cambio
     ]);
     
-    // Insertar detalles
     for (const item of d.items) {
       const detalleId = generarID('DET');
       await conn.query(`
@@ -554,7 +557,6 @@ app.post('/api/ventas', async (req, res) => {
       ]);
     }
     
-    // Insertar pagos
     if (d.pagos && d.pagos.length > 0) {
       for (const pago of d.pagos) {
         const pagoId = generarID('PAG');
@@ -590,49 +592,6 @@ app.put('/api/ventas/cancelar/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
-// ==================== RESUMEN VENTAS (DASHBOARD) ====================
-
-app.get('/api/ventas/resumen/:empresaID/:sucursalID', async (req, res) => {
-  try {
-    const { empresaID, sucursalID } = req.params;
-    const hoy = new Date().toISOString().split('T')[0];
-    
-    // Total y tickets de hoy
-    const [resumen] = await db.query(`
-      SELECT 
-        COALESCE(SUM(total), 0) as total_hoy,
-        COUNT(*) as tickets_hoy
-      FROM ventas 
-      WHERE empresa_id = ? 
-        AND sucursal_id = ?
-        AND DATE(fecha_hora) = ?
-        AND estatus = 'PAGADA'
-    `, [empresaID, sucursalID, hoy]);
-    
-    // Últimas 10 ventas
-    const [ultimas] = await db.query(`
-      SELECT v.venta_id, v.folio, v.total, v.fecha_hora, v.estatus,
-             c.nombre as cliente_nombre
-      FROM ventas v
-      LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
-      WHERE v.empresa_id = ? AND v.sucursal_id = ?
-      ORDER BY v.fecha_hora DESC
-      LIMIT 10
-    `, [empresaID, sucursalID]);
-    
-    res.json({
-      success: true,
-      total_hoy: resumen[0].total_hoy,
-      tickets_hoy: resumen[0].tickets_hoy,
-      ultimas
-    });
-  } catch (e) {
-    console.error('Error resumen ventas:', e);
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
 
 // ==================== HEALTH ====================
 
