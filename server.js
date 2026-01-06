@@ -1302,6 +1302,156 @@ app.post('/api/ventas/cobrar-complemento/:ventaID', async (req, res) => {
   }
 });
 
+// GUARDAR VENTA REABIERTA (con productos nuevos, modificados, eliminados y devolución/cobro)
+app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    
+    const { ventaID } = req.params;
+    const { 
+      productos_nuevos, 
+      productos_modificados, 
+      productos_eliminados,
+      nuevo_total,
+      devolucion,
+      pago_nuevo,
+      usuario_id,
+      turno_id
+    } = req.body;
+    
+    // Obtener venta
+    const [ventas] = await conn.query('SELECT * FROM ventas WHERE venta_id = ?', [ventaID]);
+    if (ventas.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+    }
+    
+    const venta = ventas[0];
+    const pagadoAnterior = parseFloat(venta.pagado) || 0;
+    
+    // 1. AGREGAR PRODUCTOS NUEVOS
+    if (productos_nuevos && productos_nuevos.length > 0) {
+      for (const item of productos_nuevos) {
+        const detalleId = generarID('DET');
+        await conn.query(`
+          INSERT INTO detalle_venta (
+            detalle_id, venta_id, producto_id, descripcion, cantidad, unidad_id,
+            precio_lista, precio_unitario, descuento_pct, subtotal, estatus, es_agregado_reapertura
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVO', 'Y')
+        `, [
+          detalleId, ventaID, item.producto_id, item.descripcion, item.cantidad,
+          item.unidad_id || 'PZ', item.precio_unitario, item.precio_unitario, 
+          item.descuento || 0, item.subtotal
+        ]);
+      }
+    }
+    
+    // 2. MODIFICAR PRODUCTOS EXISTENTES
+    if (productos_modificados && productos_modificados.length > 0) {
+      for (const mod of productos_modificados) {
+        await conn.query(`
+          UPDATE detalle_venta SET 
+            cantidad = ?,
+            precio_unitario = ?,
+            subtotal = ? * ?
+          WHERE detalle_id = ?
+        `, [mod.cantidad_nueva, mod.precio_nuevo, mod.cantidad_nueva, mod.precio_nuevo, mod.detalle_id]);
+      }
+    }
+    
+    // 3. ELIMINAR PRODUCTOS
+    if (productos_eliminados && productos_eliminados.length > 0) {
+      for (const elim of productos_eliminados) {
+        await conn.query(`
+          UPDATE detalle_venta SET 
+            estatus = 'CANCELADO',
+            motivo_cancelacion = 'Eliminado en reapertura',
+            cancelado_por = ?,
+            fecha_cancelacion = NOW()
+          WHERE detalle_id = ?
+        `, [usuario_id, elim.detalle_id]);
+      }
+    }
+    
+    // 4. REGISTRAR DEVOLUCIÓN
+    if (devolucion && devolucion.monto > 0) {
+      const devId = generarID('DEV');
+      await conn.query(`
+        INSERT INTO devoluciones (
+          devolucion_id, empresa_id, sucursal_id, venta_id, turno_id,
+          monto, metodo_devolucion, tipo_metodo, referencia, notas,
+          usuario_id, fecha_hora
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      `, [
+        devId, venta.empresa_id, venta.sucursal_id, ventaID, turno_id,
+        devolucion.monto, devolucion.metodo_pago_id || 'EFECTIVO', devolucion.tipo,
+        devolucion.referencia || null, devolucion.notas || null, usuario_id
+      ]);
+      
+      // Actualizar pagado
+      await conn.query(`
+        UPDATE ventas SET pagado = pagado - ? WHERE venta_id = ?
+      `, [devolucion.monto, ventaID]);
+    }
+    
+    // 5. REGISTRAR NUEVO PAGO
+    if (pago_nuevo && pago_nuevo.monto > 0) {
+      const pagoId = generarID('PAG');
+      await conn.query(`
+        INSERT INTO pagos (pago_id, empresa_id, sucursal_id, venta_id, turno_id, metodo_pago_id, monto, usuario_id, estatus, es_complemento)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'APLICADO', 'Y')
+      `, [pagoId, venta.empresa_id, venta.sucursal_id, ventaID, turno_id, pago_nuevo.metodo_pago_id, pago_nuevo.monto, usuario_id]);
+      
+      // Actualizar pagado y cambio
+      await conn.query(`
+        UPDATE ventas SET 
+          pagado = pagado + ?,
+          cambio = COALESCE(cambio, 0) + ?
+        WHERE venta_id = ?
+      `, [pago_nuevo.monto, pago_nuevo.cambio || 0, ventaID]);
+    }
+    
+    // 6. ACTUALIZAR TOTAL DE VENTA
+    await conn.query(`
+      UPDATE ventas SET 
+        total = ?,
+        reabierta = 'Y',
+        estatus = 'PAGADA'
+      WHERE venta_id = ?
+    `, [nuevo_total, ventaID]);
+    
+    // 7. REGISTRAR EN HISTORIAL
+    const historialId = generarID('HIST');
+    let descripcion = 'Venta reabierta modificada. Nuevo total: $' + nuevo_total.toFixed(2);
+    if (devolucion && devolucion.monto > 0) {
+      descripcion += '. Devolución: $' + devolucion.monto.toFixed(2) + ' en ' + devolucion.tipo;
+    }
+    if (pago_nuevo && pago_nuevo.monto > 0) {
+      descripcion += '. Cobro adicional: $' + pago_nuevo.monto.toFixed(2);
+    }
+    
+    await conn.query(`
+      INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, fecha)
+      VALUES (?, ?, 'MODIFICACION_REAPERTURA', ?, ?, NOW())
+    `, [historialId, ventaID, descripcion, usuario_id]);
+    
+    await conn.commit();
+    
+    res.json({
+      success: true,
+      folio: venta.folio,
+      nuevo_total: nuevo_total
+    });
+  } catch (e) {
+    await conn.rollback();
+    console.error('Error guardando venta reabierta:', e);
+    res.status(500).json({ success: false, error: e.message });
+  } finally {
+    conn.release();
+  }
+});
+
 // ==================== TURNOS ====================
 
 app.get('/api/turnos/activo/:sucursalID/:usuarioID', async (req, res) => {
