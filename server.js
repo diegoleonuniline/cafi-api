@@ -112,7 +112,6 @@ app.get('/api/auth/verificar', async (req, res) => {
   }
 });
 
-// VALIDAR CLAVE DE ADMINISTRADOR (único endpoint)
 app.post('/api/auth/validar-admin', async (req, res) => {
   try {
     const { empresa_id, password } = req.body;
@@ -147,12 +146,149 @@ app.post('/api/auth/validar-admin', async (req, res) => {
   }
 });
 
+// ==================== EMPRESAS ====================
+
+app.get('/api/empresas/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM empresas WHERE empresa_id = ?', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: 'No encontrada' });
+    res.json({ success: true, empresa: rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/empresas/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE empresas SET 
+        nombre=?, rfc=?, telefono=?, email=?, direccion=?, 
+        regimen_fiscal=?, codigo_postal=?
+      WHERE empresa_id=?
+    `, [d.nombre, d.rfc, d.telefono, d.email, d.direccion, d.regimen_fiscal, d.codigo_postal, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== SUCURSALES ====================
+
+app.get('/api/sucursales/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT *, activa as activo FROM sucursales WHERE empresa_id = ? ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, sucursales: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/sucursales', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('SUC');
+    await db.query(`
+      INSERT INTO sucursales (sucursal_id, empresa_id, nombre, direccion, telefono, email, responsable, activa)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, d.empresa_id, d.nombre, d.direccion, d.telefono, d.email, d.responsable, d.activo || 'Y']);
+    res.json({ success: true, id, sucursal_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/sucursales/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE sucursales SET nombre=?, direccion=?, telefono=?, email=?, responsable=?, activa=?
+      WHERE sucursal_id=?
+    `, [d.nombre, d.direccion, d.telefono, d.email, d.responsable, d.activo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/sucursales/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE sucursales SET activa = "N" WHERE sucursal_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== USUARIOS ====================
+
+app.get('/api/usuarios/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT u.*, s.nombre as sucursal_nombre 
+      FROM usuarios u
+      LEFT JOIN sucursales s ON u.sucursal_id = s.sucursal_id
+      WHERE u.empresa_id = ? AND u.activo = 'Y'
+      ORDER BY u.nombre
+    `, [req.params.empresaID]);
+    res.json({ success: true, usuarios: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/usuarios', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('USR');
+    await db.query(`
+      INSERT INTO usuarios (usuario_id, empresa_id, sucursal_id, email, contrasena, nombre, rol, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, d.empresa_id, d.sucursal_id, d.email, d.contrasena, d.nombre, d.rol, d.activo || 'Y']);
+    res.json({ success: true, id, usuario_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/usuarios/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    if (d.contrasena) {
+      await db.query(`
+        UPDATE usuarios SET nombre=?, contrasena=?, rol=?, sucursal_id=?, activo=? 
+        WHERE usuario_id=?
+      `, [d.nombre, d.contrasena, d.rol, d.sucursal_id, d.activo, req.params.id]);
+    } else {
+      await db.query(`
+        UPDATE usuarios SET nombre=?, rol=?, sucursal_id=?, activo=? 
+        WHERE usuario_id=?
+      `, [d.nombre, d.rol, d.sucursal_id, d.activo, req.params.id]);
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/usuarios/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE usuarios SET activo = "N" WHERE usuario_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ==================== IMPUESTOS ====================
 
 app.get('/api/impuestos/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM impuestos WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      'SELECT *, valor as tasa FROM impuestos WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, impuestos: rows, data: rows });
@@ -164,7 +300,7 @@ app.get('/api/impuestos/:empresaID', async (req, res) => {
 app.get('/api/impuestos/:empresaID/todos', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM impuestos WHERE empresa_id = ? ORDER BY nombre',
+      'SELECT *, valor as tasa FROM impuestos WHERE empresa_id = ? ORDER BY nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, impuestos: rows });
@@ -180,7 +316,7 @@ app.post('/api/impuestos', async (req, res) => {
     await db.query(`
       INSERT INTO impuestos (impuesto_id, empresa_id, nombre, tipo, valor, aplica_ventas, aplica_compras, activo)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
-    `, [id, d.empresa_id, d.nombre, d.tipo || 'PORCENTAJE', d.valor || 0, d.aplica_ventas || 'Y', d.aplica_compras || 'Y']);
+    `, [id, d.empresa_id, d.nombre, d.tipo || 'PORCENTAJE', d.tasa || d.valor || 0, d.aplica_ventas || 'Y', d.aplica_compras || 'Y']);
     res.json({ success: true, id, impuesto_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -191,9 +327,9 @@ app.put('/api/impuestos/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE impuestos SET nombre=?, tipo=?, valor=?, aplica_ventas=?, aplica_compras=?
+      UPDATE impuestos SET nombre=?, tipo=?, valor=?, aplica_ventas=?, aplica_compras=?, activo=?
       WHERE impuesto_id=?
-    `, [d.nombre, d.tipo, d.valor, d.aplica_ventas, d.aplica_compras, req.params.id]);
+    `, [d.nombre, d.tipo || 'PORCENTAJE', d.tasa || d.valor, d.aplica_ventas || 'Y', d.aplica_compras || 'Y', d.activo || 'Y', req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -214,7 +350,7 @@ app.delete('/api/impuestos/:id', async (req, res) => {
 app.get('/api/metodos-pago/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY orden',
+      'SELECT *, codigo_sat as clave_sat FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY orden, nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, metodos: rows });
@@ -226,7 +362,7 @@ app.get('/api/metodos-pago/:empresaID', async (req, res) => {
 app.get('/api/metodos-pago/:empresaID/todos', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM metodos_pago WHERE empresa_id = ? ORDER BY orden, nombre',
+      'SELECT *, codigo_sat as clave_sat FROM metodos_pago WHERE empresa_id = ? ORDER BY orden, nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, metodos: rows });
@@ -240,9 +376,9 @@ app.post('/api/metodos-pago', async (req, res) => {
     const d = req.body;
     const id = generarID('MP');
     await db.query(`
-      INSERT INTO metodos_pago (metodo_pago_id, empresa_id, nombre, tipo, icono, clave_sat, requiere_referencia, orden, activo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Y')
-    `, [id, d.empresa_id, d.nombre, d.tipo || 'EFECTIVO', d.icono || 'fa-money-bill-wave', d.clave_sat, d.requiere_referencia || 'N', d.orden || 0]);
+      INSERT INTO metodos_pago (metodo_pago_id, empresa_id, nombre, tipo, codigo_sat, requiere_referencia, orden, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.nombre, d.tipo || 'EFECTIVO', d.clave_sat || d.codigo_sat, d.requiere_referencia || 'N', d.orden || 0]);
     res.json({ success: true, id, metodo_pago_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -253,9 +389,9 @@ app.put('/api/metodos-pago/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE metodos_pago SET nombre=?, tipo=?, icono=?, clave_sat=?, requiere_referencia=?, orden=?
+      UPDATE metodos_pago SET nombre=?, tipo=?, codigo_sat=?, requiere_referencia=?, activo=?
       WHERE metodo_pago_id=?
-    `, [d.nombre, d.tipo, d.icono, d.clave_sat, d.requiere_referencia, d.orden, req.params.id]);
+    `, [d.nombre, d.tipo, d.clave_sat || d.codigo_sat, d.requiere_referencia, d.activo || 'Y', req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -265,6 +401,68 @@ app.put('/api/metodos-pago/:id', async (req, res) => {
 app.delete('/api/metodos-pago/:id', async (req, res) => {
   try {
     await db.query('UPDATE metodos_pago SET activo = "N" WHERE metodo_pago_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== UNIDADES DE MEDIDA ====================
+
+app.get('/api/unidades/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT *, codigo_sat as clave_sat FROM unidades_medida WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, unidades: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get('/api/unidades/:empresaID/todos', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT *, codigo_sat as clave_sat FROM unidades_medida WHERE empresa_id = ? ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, unidades: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/unidades', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = d.abreviatura || generarID('UNI');
+    await db.query(`
+      INSERT INTO unidades_medida (unidad_id, empresa_id, nombre, abreviatura, codigo_sat, activo)
+      VALUES (?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.nombre, d.abreviatura, d.clave_sat || d.codigo_sat]);
+    res.json({ success: true, id, unidad_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/unidades/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE unidades_medida SET nombre=?, abreviatura=?, codigo_sat=?, activo=?
+      WHERE unidad_id=?
+    `, [d.nombre, d.abreviatura, d.clave_sat || d.codigo_sat, d.activo || 'Y', req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/unidades/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE unidades_medida SET activo = "N" WHERE unidad_id = ?', [req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -315,6 +513,77 @@ app.put('/api/categorias/:id', async (req, res) => {
 app.delete('/api/categorias/:id', async (req, res) => {
   try {
     await db.query('UPDATE categorias SET activo = "N" WHERE categoria_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== CLIENTES ====================
+
+app.get('/api/clientes/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM clientes WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, clientes: rows, data: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get('/api/clientes/detalle/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM clientes WHERE cliente_id = ?', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: 'No encontrado' });
+    res.json({ success: true, data: rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/clientes', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('CLI');
+    await db.query(`
+      INSERT INTO clientes (
+        cliente_id, empresa_id, nombre, telefono, email, direccion,
+        rfc, tipo_precio, permite_credito, limite_credito, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [
+      id, d.empresa_id, d.nombre, d.telefono, d.email, d.direccion,
+      d.rfc, d.tipo_precio || 1, d.permite_credito || 'N', d.limite_credito || 0
+    ]);
+    res.json({ success: true, id, cliente_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/clientes/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE clientes SET 
+        nombre=?, telefono=?, email=?, direccion=?, rfc=?,
+        tipo_precio=?, permite_credito=?, limite_credito=?, activo=?
+      WHERE cliente_id=?
+    `, [
+      d.nombre, d.telefono, d.email, d.direccion, d.rfc,
+      d.tipo_precio, d.permite_credito, d.limite_credito, d.activo || 'Y',
+      req.params.id
+    ]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/clientes/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE clientes SET activo = "N" WHERE cliente_id = ?', [req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -517,77 +786,6 @@ app.delete('/api/productos/:id', async (req, res) => {
   }
 });
 
-// ==================== CLIENTES ====================
-
-app.get('/api/clientes/:empresaID', async (req, res) => {
-  try {
-    const [rows] = await db.query(
-      'SELECT * FROM clientes WHERE empresa_id = ? ORDER BY nombre',
-      [req.params.empresaID]
-    );
-    res.json({ success: true, clientes: rows, data: rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.get('/api/clientes/detalle/:id', async (req, res) => {
-  try {
-    const [rows] = await db.query('SELECT * FROM clientes WHERE cliente_id = ?', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ success: false, error: 'No encontrado' });
-    res.json({ success: true, data: rows[0] });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.post('/api/clientes', async (req, res) => {
-  try {
-    const d = req.body;
-    const id = generarID('CLI');
-    await db.query(`
-      INSERT INTO clientes (
-        cliente_id, empresa_id, nombre, telefono, email, direccion,
-        rfc, tipo_precio, permite_credito, limite_credito, activo
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
-    `, [
-      id, d.empresa_id, d.nombre, d.telefono, d.email, d.direccion,
-      d.rfc, d.tipo_precio || 1, d.permite_credito || 'N', d.limite_credito || 0
-    ]);
-    res.json({ success: true, id, cliente_id: id });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.put('/api/clientes/:id', async (req, res) => {
-  try {
-    const d = req.body;
-    await db.query(`
-      UPDATE clientes SET 
-        nombre=?, telefono=?, email=?, direccion=?, rfc=?,
-        tipo_precio=?, permite_credito=?, limite_credito=?, activo=?
-      WHERE cliente_id=?
-    `, [
-      d.nombre, d.telefono, d.email, d.direccion, d.rfc,
-      d.tipo_precio, d.permite_credito, d.limite_credito, d.activo || 'Y',
-      req.params.id
-    ]);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.delete('/api/clientes/:id', async (req, res) => {
-  try {
-    await db.query('UPDATE clientes SET activo = "N" WHERE cliente_id = ?', [req.params.id]);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
 // ==================== POS ====================
 
 app.get('/api/pos/cargar/:empresaID/:sucursalID', async (req, res) => {
@@ -759,7 +957,6 @@ app.get('/api/ventas/detalle/:id', async (req, res) => {
   }
 });
 
-// CREAR VENTA
 app.post('/api/ventas', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -786,7 +983,6 @@ app.post('/api/ventas', async (req, res) => {
       d.subtotal, d.descuento || 0, d.total, d.pagado, d.cambio
     ]);
     
-    // DETALLE DE VENTA
     for (const item of d.items) {
       const detalleId = generarID('DET');
       const subtotalItem = item.precio_unitario * item.cantidad;
@@ -805,7 +1001,6 @@ app.post('/api/ventas', async (req, res) => {
       ]);
     }
     
-    // PAGOS
     if (d.pagos && d.pagos.length > 0) {
       for (const pago of d.pagos) {
         const pagoId = generarID('PAG');
@@ -816,7 +1011,6 @@ app.post('/api/ventas', async (req, res) => {
       }
     }
     
-    // REGISTRAR EN HISTORIAL
     const historialId = generarID('HIST');
     await conn.query(`
       INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, fecha)
@@ -849,9 +1043,7 @@ app.put('/api/ventas/cancelar/:id', async (req, res) => {
   }
 });
 
-// ==================== MIS VENTAS DEL TURNO ====================
-
-// OBTENER VENTAS DEL TURNO
+// VENTAS DEL TURNO
 app.get('/api/ventas/turno/:turnoID', async (req, res) => {
   try {
     const { turnoID } = req.params;
@@ -875,12 +1067,11 @@ app.get('/api/ventas/turno/:turnoID', async (req, res) => {
   }
 });
 
-// DETALLE COMPLETO DE VENTA (con productos, pagos e historial)
+// DETALLE COMPLETO DE VENTA
 app.get('/api/ventas/detalle-completo/:ventaID', async (req, res) => {
   try {
     const { ventaID } = req.params;
     
-    // Venta
     const [ventas] = await db.query(`
       SELECT v.*, 
              c.nombre as cliente_nombre,
@@ -895,7 +1086,6 @@ app.get('/api/ventas/detalle-completo/:ventaID', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Venta no encontrada' });
     }
     
-    // Productos
     const [productos] = await db.query(`
       SELECT d.*, 
              p.nombre as producto_nombre,
@@ -907,7 +1097,6 @@ app.get('/api/ventas/detalle-completo/:ventaID', async (req, res) => {
       ORDER BY d.detalle_id
     `, [ventaID]);
     
-    // Pagos
     const [pagos] = await db.query(`
       SELECT p.*,
              mp.nombre as metodo_nombre,
@@ -918,7 +1107,6 @@ app.get('/api/ventas/detalle-completo/:ventaID', async (req, res) => {
       ORDER BY p.fecha_hora DESC
     `, [ventaID]);
     
-    // Historial
     const [historial] = await db.query(`
       SELECT h.*,
              u.nombre as usuario_nombre
@@ -950,7 +1138,6 @@ app.post('/api/ventas/cancelar-completa/:ventaID', async (req, res) => {
     const { ventaID } = req.params;
     const { motivo_cancelacion, cancelado_por, autorizado_por } = req.body;
     
-    // Obtener venta
     const [ventas] = await conn.query('SELECT * FROM ventas WHERE venta_id = ?', [ventaID]);
     if (ventas.length === 0) {
       await conn.rollback();
@@ -960,7 +1147,6 @@ app.post('/api/ventas/cancelar-completa/:ventaID', async (req, res) => {
     const venta = ventas[0];
     const pagado = parseFloat(venta.pagado) || 0;
     
-    // Actualizar venta
     await conn.query(`
       UPDATE ventas SET 
         estatus = 'CANCELADA',
@@ -970,7 +1156,6 @@ app.post('/api/ventas/cancelar-completa/:ventaID', async (req, res) => {
       WHERE venta_id = ?
     `, [motivo_cancelacion, cancelado_por, ventaID]);
     
-    // Cancelar todos los productos
     await conn.query(`
       UPDATE detalle_venta SET 
         estatus = 'CANCELADO',
@@ -980,12 +1165,10 @@ app.post('/api/ventas/cancelar-completa/:ventaID', async (req, res) => {
       WHERE venta_id = ?
     `, [cancelado_por, ventaID]);
     
-    // Cancelar pagos
     await conn.query(`
       UPDATE pagos SET estatus = 'CANCELADO' WHERE venta_id = ?
     `, [ventaID]);
     
-    // Registrar en historial
     const historialId = generarID('HIST');
     await conn.query(`
       INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, datos_anteriores, fecha)
@@ -1023,7 +1206,6 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
     const { detalleID } = req.params;
     const { venta_id, cantidad_cancelar, motivo, cancelado_por, autorizado_por } = req.body;
     
-    // Obtener detalle
     const [detalles] = await conn.query('SELECT * FROM detalle_venta WHERE detalle_id = ?', [detalleID]);
     if (detalles.length === 0) {
       await conn.rollback();
@@ -1036,9 +1218,7 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
     const cantidadCancelar = Math.min(parseFloat(cantidad_cancelar), cantidadActual);
     const devolucion = cantidadCancelar * precioUnit;
     
-    // Actualizar o cancelar completamente el producto
     if (cantidadCancelar >= cantidadActual) {
-      // Cancelar todo el producto
       await conn.query(`
         UPDATE detalle_venta SET 
           estatus = 'CANCELADO',
@@ -1049,7 +1229,6 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
         WHERE detalle_id = ?
       `, [cantidadCancelar, motivo, cancelado_por, detalleID]);
     } else {
-      // Cancelación parcial - reducir cantidad
       await conn.query(`
         UPDATE detalle_venta SET 
           cantidad = cantidad - ?,
@@ -1059,7 +1238,6 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
       `, [cantidadCancelar, cantidadCancelar, cantidadCancelar, detalleID]);
     }
     
-    // Recalcular total de la venta
     const [nuevoTotalRes] = await conn.query(`
       SELECT COALESCE(SUM(subtotal), 0) as nuevo_total 
       FROM detalle_venta 
@@ -1069,7 +1247,6 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
     
     await conn.query('UPDATE ventas SET total = ? WHERE venta_id = ?', [nuevoTotal, venta_id]);
     
-    // Registrar en historial
     const historialId = generarID('HIST');
     await conn.query(`
       INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, datos_anteriores, fecha)
@@ -1107,7 +1284,6 @@ app.post('/api/ventas/cambiar-pago/:pagoID', async (req, res) => {
     const { pagoID } = req.params;
     const { venta_id, nuevo_metodo_id, referencia, motivo, modificado_por, autorizado_por } = req.body;
     
-    // Obtener pago actual
     const [pagos] = await conn.query(`
       SELECT p.*, mp.nombre as metodo_nombre 
       FROM pagos p 
@@ -1122,11 +1298,9 @@ app.post('/api/ventas/cambiar-pago/:pagoID', async (req, res) => {
     
     const pagoAnterior = pagos[0];
     
-    // Obtener nombre del nuevo método
     const [nuevoMetodo] = await conn.query('SELECT nombre FROM metodos_pago WHERE metodo_pago_id = ?', [nuevo_metodo_id]);
     const nuevoMetodoNombre = nuevoMetodo.length > 0 ? nuevoMetodo[0].nombre : 'Nuevo método';
     
-    // Cancelar pago anterior
     await conn.query(`
       UPDATE pagos SET 
         estatus = 'CANCELADO',
@@ -1134,7 +1308,6 @@ app.post('/api/ventas/cambiar-pago/:pagoID', async (req, res) => {
       WHERE pago_id = ?
     `, ['Cambio de método: ' + motivo, pagoID]);
     
-    // Crear nuevo pago
     const nuevoPagoId = generarID('PAG');
     await conn.query(`
       INSERT INTO pagos (pago_id, empresa_id, sucursal_id, venta_id, turno_id, metodo_pago_id, monto, referencia, usuario_id, reemplaza_pago_id, estatus, fecha_hora)
@@ -1152,7 +1325,6 @@ app.post('/api/ventas/cambiar-pago/:pagoID', async (req, res) => {
       pagoID
     ]);
     
-    // Registrar en historial
     const historialId = generarID('HIST');
     await conn.query(`
       INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, datos_anteriores, fecha)
@@ -1186,7 +1358,6 @@ app.post('/api/ventas/reabrir/:ventaID', async (req, res) => {
     const { ventaID } = req.params;
     const { usuario_id, autorizado_por } = req.body;
     
-    // Marcar venta como reabierta
     await conn.query(`
       UPDATE ventas SET 
         reabierta = 'Y',
@@ -1194,7 +1365,6 @@ app.post('/api/ventas/reabrir/:ventaID', async (req, res) => {
       WHERE venta_id = ?
     `, [ventaID]);
     
-    // Registrar en historial
     const historialId = generarID('HIST');
     await conn.query(`
       INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, fecha)
@@ -1218,7 +1388,7 @@ app.post('/api/ventas/reabrir/:ventaID', async (req, res) => {
   }
 });
 
-// COBRAR COMPLEMENTO (VENTA REABIERTA)
+// COBRAR COMPLEMENTO
 app.post('/api/ventas/cobrar-complemento/:ventaID', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -1227,7 +1397,6 @@ app.post('/api/ventas/cobrar-complemento/:ventaID', async (req, res) => {
     const { ventaID } = req.params;
     const { monto_cobrado, metodo_pago_id, cambio, productos_nuevos, nuevo_total, usuario_id, turno_id } = req.body;
     
-    // Obtener venta
     const [ventas] = await conn.query('SELECT * FROM ventas WHERE venta_id = ?', [ventaID]);
     if (ventas.length === 0) {
       await conn.rollback();
@@ -1237,7 +1406,6 @@ app.post('/api/ventas/cobrar-complemento/:ventaID', async (req, res) => {
     const venta = ventas[0];
     const pagadoAnterior = parseFloat(venta.pagado) || 0;
     
-    // Agregar nuevos productos
     if (productos_nuevos && productos_nuevos.length > 0) {
       for (const item of productos_nuevos) {
         const detalleId = generarID('DET');
@@ -1254,14 +1422,12 @@ app.post('/api/ventas/cobrar-complemento/:ventaID', async (req, res) => {
       }
     }
     
-    // Registrar nuevo pago
     const pagoId = generarID('PAG');
     await conn.query(`
       INSERT INTO pagos (pago_id, empresa_id, sucursal_id, venta_id, turno_id, metodo_pago_id, monto, usuario_id, estatus, es_complemento)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'APLICADO', 'Y')
     `, [pagoId, venta.empresa_id, venta.sucursal_id, ventaID, turno_id, metodo_pago_id, monto_cobrado, usuario_id]);
     
-    // Actualizar venta
     await conn.query(`
       UPDATE ventas SET 
         total = ?,
@@ -1272,7 +1438,6 @@ app.post('/api/ventas/cobrar-complemento/:ventaID', async (req, res) => {
       WHERE venta_id = ?
     `, [nuevo_total, monto_cobrado, cambio || 0, ventaID]);
     
-    // Registrar en historial
     const historialId = generarID('HIST');
     const numNuevos = productos_nuevos ? productos_nuevos.length : 0;
     await conn.query(`
@@ -1302,7 +1467,7 @@ app.post('/api/ventas/cobrar-complemento/:ventaID', async (req, res) => {
   }
 });
 
-// GUARDAR VENTA REABIERTA (con productos nuevos, modificados, eliminados y devolución/cobro)
+// GUARDAR VENTA REABIERTA
 app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -1320,7 +1485,6 @@ app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
       turno_id
     } = req.body;
     
-    // Obtener venta
     const [ventas] = await conn.query('SELECT * FROM ventas WHERE venta_id = ?', [ventaID]);
     if (ventas.length === 0) {
       await conn.rollback();
@@ -1330,7 +1494,6 @@ app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
     const venta = ventas[0];
     const pagadoAnterior = parseFloat(venta.pagado) || 0;
     
-    // 1. AGREGAR PRODUCTOS NUEVOS
     if (productos_nuevos && productos_nuevos.length > 0) {
       for (const item of productos_nuevos) {
         const detalleId = generarID('DET');
@@ -1347,7 +1510,6 @@ app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
       }
     }
     
-    // 2. MODIFICAR PRODUCTOS EXISTENTES
     if (productos_modificados && productos_modificados.length > 0) {
       for (const mod of productos_modificados) {
         await conn.query(`
@@ -1360,7 +1522,6 @@ app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
       }
     }
     
-    // 3. ELIMINAR PRODUCTOS
     if (productos_eliminados && productos_eliminados.length > 0) {
       for (const elim of productos_eliminados) {
         await conn.query(`
@@ -1374,7 +1535,6 @@ app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
       }
     }
     
-    // 4. REGISTRAR DEVOLUCIÓN
     if (devolucion && devolucion.monto > 0) {
       const devId = generarID('DEV');
       await conn.query(`
@@ -1389,13 +1549,11 @@ app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
         devolucion.referencia || null, devolucion.notas || null, usuario_id
       ]);
       
-      // Actualizar pagado
       await conn.query(`
         UPDATE ventas SET pagado = pagado - ? WHERE venta_id = ?
       `, [devolucion.monto, ventaID]);
     }
     
-    // 5. REGISTRAR NUEVO PAGO
     if (pago_nuevo && pago_nuevo.monto > 0) {
       const pagoId = generarID('PAG');
       await conn.query(`
@@ -1403,7 +1561,6 @@ app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'APLICADO', 'Y')
       `, [pagoId, venta.empresa_id, venta.sucursal_id, ventaID, turno_id, pago_nuevo.metodo_pago_id, pago_nuevo.monto, usuario_id]);
       
-      // Actualizar pagado y cambio
       await conn.query(`
         UPDATE ventas SET 
           pagado = pagado + ?,
@@ -1412,7 +1569,6 @@ app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
       `, [pago_nuevo.monto, pago_nuevo.cambio || 0, ventaID]);
     }
     
-    // 6. ACTUALIZAR TOTAL DE VENTA
     await conn.query(`
       UPDATE ventas SET 
         total = ?,
@@ -1421,7 +1577,6 @@ app.post('/api/ventas/guardar-reabierta/:ventaID', async (req, res) => {
       WHERE venta_id = ?
     `, [nuevo_total, ventaID]);
     
-    // 7. REGISTRAR EN HISTORIAL
     const historialId = generarID('HIST');
     let descripcion = 'Venta reabierta modificada. Nuevo total: $' + nuevo_total.toFixed(2);
     if (devolucion && devolucion.monto > 0) {
@@ -1503,7 +1658,6 @@ app.post('/api/turnos/abrir', async (req, res) => {
   }
 });
 
-// RESUMEN TURNO
 app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
   try {
     const { turnoID } = req.params;
@@ -1516,7 +1670,6 @@ app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
     const turno = turnos[0];
     const saldoInicial = parseFloat(turno.saldo_inicial) || 0;
     
-    // Ventas del turno
     const [ventasRes] = await db.query(`
       SELECT 
         COUNT(CASE WHEN estatus = 'PAGADA' THEN 1 END) as cantidad_ventas,
@@ -1527,7 +1680,6 @@ app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
       WHERE turno_id = ?
     `, [turnoID]);
     
-    // PAGOS POR MÉTODO
     const [pagosPorMetodo] = await db.query(`
       SELECT 
         mp.metodo_pago_id,
@@ -1542,7 +1694,6 @@ app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
       ORDER BY mp.orden, mp.nombre
     `, [turnoID, turno.empresa_id]);
     
-    // Movimientos de caja
     const [movimientos] = await db.query(`
       SELECT tipo, COALESCE(SUM(monto), 0) as total, COUNT(*) as cantidad
       FROM movimientos_caja WHERE turno_id = ? GROUP BY tipo
@@ -1559,7 +1710,6 @@ app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
       }
     });
     
-    // Solo el efectivo cuenta para el arqueo
     let efectivoVentas = 0;
     const pagosMapeados = pagosPorMetodo.map(p => {
       const total = parseFloat(p.total) || 0;
@@ -1601,7 +1751,6 @@ app.get('/api/turnos/resumen/:turnoID', async (req, res) => {
   }
 });
 
-// CERRAR TURNO
 app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -1619,7 +1768,6 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
     const turno = turnos[0];
     const saldoInicial = parseFloat(turno.saldo_inicial) || 0;
     
-    // Ventas del turno
     const [ventas] = await conn.query(`
       SELECT 
         COUNT(CASE WHEN estatus = 'PAGADA' THEN 1 END) as cantidad_ventas,
@@ -1631,7 +1779,6 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
       WHERE turno_id = ?
     `, [turnoID]);
     
-    // PAGOS POR TIPO
     const [pagos] = await conn.query(`
       SELECT 
         COALESCE(mp.tipo, 'EFECTIVO') as tipo,
@@ -1652,7 +1799,6 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
       else ventasOtros += total;
     });
     
-    // Ventas a crédito
     const [creditos] = await conn.query(`
       SELECT COALESCE(SUM(total), 0) as total
       FROM ventas 
@@ -1660,7 +1806,6 @@ app.post('/api/turnos/cerrar/:turnoID', async (req, res) => {
     `, [turnoID]);
     const ventasCredito = parseFloat(creditos[0].total) || 0;
     
-    // Movimientos de caja
     const [movimientos] = await conn.query(`
       SELECT tipo, COALESCE(SUM(monto), 0) as total
       FROM movimientos_caja WHERE turno_id = ? GROUP BY tipo
@@ -1802,22 +1947,8 @@ app.post('/api/movimientos-caja', async (req, res) => {
   }
 });
 
-// ==================== HEALTH ====================
-
-app.get('/health', async (req, res) => {
-  try {
-    await db.query('SELECT 1');
-    res.json({ status: 'ok', db: 'connected' });
-  } catch (e) {
-    res.json({ status: 'ok', db: 'error', error: e.message });
-  }
-});
-
-
-// ==================== REPORTES ====================
 // ==================== REPORTES ====================
 
-// VENTAS POR PERÍODO
 app.get('/api/reportes/ventas-periodo', async (req, res) => {
   try {
     const { empresa_id, desde, hasta, agrupar } = req.query;
@@ -1861,7 +1992,6 @@ app.get('/api/reportes/ventas-periodo', async (req, res) => {
   }
 });
 
-// VENTAS POR USUARIO
 app.get('/api/reportes/ventas-usuario', async (req, res) => {
   try {
     const { empresa_id, desde, hasta } = req.query;
@@ -1891,7 +2021,6 @@ app.get('/api/reportes/ventas-usuario', async (req, res) => {
   }
 });
 
-// PRODUCTOS VENDIDOS
 app.get('/api/reportes/productos-vendidos', async (req, res) => {
   try {
     const { empresa_id, desde, hasta, categoria_id, orden } = req.query;
@@ -1933,7 +2062,6 @@ app.get('/api/reportes/productos-vendidos', async (req, res) => {
   }
 });
 
-// CORTES DE CAJA
 app.get('/api/reportes/cortes', async (req, res) => {
   try {
     const { empresa_id, desde, hasta, usuario_id } = req.query;
@@ -1973,7 +2101,6 @@ app.get('/api/reportes/cortes', async (req, res) => {
   }
 });
 
-// PAGOS RECIBIDOS
 app.get('/api/reportes/pagos', async (req, res) => {
   try {
     const { empresa_id, desde, hasta, metodo_id, estado } = req.query;
@@ -2022,7 +2149,6 @@ app.get('/api/reportes/pagos', async (req, res) => {
   }
 });
 
-// MOVIMIENTOS DE CAJA
 app.get('/api/reportes/movimientos', async (req, res) => {
   try {
     const { empresa_id, desde, hasta, tipo } = req.query;
@@ -2061,12 +2187,8 @@ app.get('/api/reportes/movimientos', async (req, res) => {
   }
 });
 
-// DEVOLUCIONES
 app.get('/api/reportes/devoluciones', async (req, res) => {
   try {
-    const { empresa_id, desde, hasta, motivo } = req.query;
-    
-    // Retornar vacío si no existe la tabla
     res.json({ success: true, devoluciones: [] });
   } catch (e) {
     console.error('Error devoluciones:', e);
@@ -2074,7 +2196,6 @@ app.get('/api/reportes/devoluciones', async (req, res) => {
   }
 });
 
-// CANCELACIONES
 app.get('/api/reportes/cancelaciones', async (req, res) => {
   try {
     const { empresa_id, desde, hasta } = req.query;
@@ -2105,7 +2226,6 @@ app.get('/api/reportes/cancelaciones', async (req, res) => {
   }
 });
 
-// CLIENTES FRECUENTES
 app.get('/api/reportes/clientes-frecuentes', async (req, res) => {
   try {
     const { empresa_id, desde, hasta, top } = req.query;
@@ -2137,7 +2257,6 @@ app.get('/api/reportes/clientes-frecuentes', async (req, res) => {
   }
 });
 
-// CUENTAS POR COBRAR
 app.get('/api/reportes/cuentas-cobrar', async (req, res) => {
   try {
     const { empresa_id, cliente_id } = req.query;
@@ -2175,210 +2294,6 @@ app.get('/api/reportes/cuentas-cobrar', async (req, res) => {
   }
 });
 
-// REEMPLAZA tu GET /api/usuarios/:empresaID existente por este:
-app.get('/api/usuarios/:empresaID', async (req, res) => {
-  try {
-    const [rows] = await db.query(`
-      SELECT u.*, s.nombre as sucursal_nombre 
-      FROM usuarios u
-      LEFT JOIN sucursales s ON u.sucursal_id = s.sucursal_id
-      WHERE u.empresa_id = ? AND u.activo = 'Y'
-      ORDER BY u.nombre
-    `, [req.params.empresaID]);
-    res.json({ success: true, usuarios: rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-
-// ==================== EMPRESAS ====================
-
-app.get('/api/empresas/:id', async (req, res) => {
-  try {
-    const [rows] = await db.query('SELECT * FROM empresas WHERE empresa_id = ?', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ success: false, error: 'No encontrada' });
-    res.json({ success: true, empresa: rows[0] });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.put('/api/empresas/:id', async (req, res) => {
-  try {
-    const d = req.body;
-    await db.query(`
-      UPDATE empresas SET 
-        nombre=?, rfc=?, telefono=?, email=?, direccion=?, 
-        regimen_fiscal=?, codigo_postal=?
-      WHERE empresa_id=?
-    `, [d.nombre, d.rfc, d.telefono, d.email, d.direccion, d.regimen_fiscal, d.codigo_postal, req.params.id]);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// ==================== SUCURSALES ====================
-
-app.get('/api/sucursales/:empresaID', async (req, res) => {
-  try {
-    const [rows] = await db.query(
-      'SELECT *, activa as activo FROM sucursales WHERE empresa_id = ? ORDER BY nombre',
-      [req.params.empresaID]
-    );
-    res.json({ success: true, sucursales: rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.post('/api/sucursales', async (req, res) => {
-  try {
-    const d = req.body;
-    const id = generarID('SUC');
-    await db.query(`
-      INSERT INTO sucursales (sucursal_id, empresa_id, nombre, direccion, telefono, email, responsable, activa)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [id, d.empresa_id, d.nombre, d.direccion, d.telefono, d.email, d.responsable, d.activo || 'Y']);
-    res.json({ success: true, id, sucursal_id: id });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.put('/api/sucursales/:id', async (req, res) => {
-  try {
-    const d = req.body;
-    await db.query(`
-      UPDATE sucursales SET nombre=?, direccion=?, telefono=?, email=?, responsable=?, activa=?
-      WHERE sucursal_id=?
-    `, [d.nombre, d.direccion, d.telefono, d.email, d.responsable, d.activo, req.params.id]);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.delete('/api/sucursales/:id', async (req, res) => {
-  try {
-    await db.query('UPDATE sucursales SET activa = "N" WHERE sucursal_id = ?', [req.params.id]);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// ==================== USUARIOS ====================
-
-app.get('/api/usuarios/:empresaID', async (req, res) => {
-  try {
-    const [rows] = await db.query(`
-      SELECT u.*, s.nombre as sucursal_nombre 
-      FROM usuarios u
-      LEFT JOIN sucursales s ON u.sucursal_id = s.sucursal_id
-      WHERE u.empresa_id = ? AND u.activo = 'Y'
-      ORDER BY u.nombre
-    `, [req.params.empresaID]);
-    res.json({ success: true, usuarios: rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.post('/api/usuarios', async (req, res) => {
-  try {
-    const d = req.body;
-    const id = generarID('USR');
-    await db.query(`
-      INSERT INTO usuarios (usuario_id, empresa_id, sucursal_id, email, contrasena, nombre, rol, activo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [id, d.empresa_id, d.sucursal_id, d.email, d.contrasena, d.nombre, d.rol, d.activo || 'Y']);
-    res.json({ success: true, id, usuario_id: id });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.put('/api/usuarios/:id', async (req, res) => {
-  try {
-    const d = req.body;
-    if (d.contrasena) {
-      await db.query(`
-        UPDATE usuarios SET nombre=?, contrasena=?, rol=?, sucursal_id=?, activo=? 
-        WHERE usuario_id=?
-      `, [d.nombre, d.contrasena, d.rol, d.sucursal_id, d.activo, req.params.id]);
-    } else {
-      await db.query(`
-        UPDATE usuarios SET nombre=?, rol=?, sucursal_id=?, activo=? 
-        WHERE usuario_id=?
-      `, [d.nombre, d.rol, d.sucursal_id, d.activo, req.params.id]);
-    }
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.delete('/api/usuarios/:id', async (req, res) => {
-  try {
-    await db.query('UPDATE usuarios SET activo = "N" WHERE usuario_id = ?', [req.params.id]);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// ==================== UNIDADES DE MEDIDA ====================
-
-app.get('/api/unidades/:empresaID', async (req, res) => {
-  try {
-    const [rows] = await db.query(
-      'SELECT * FROM unidades_medida WHERE empresa_id = ? ORDER BY nombre',
-      [req.params.empresaID]
-    );
-    res.json({ success: true, unidades: rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.post('/api/unidades', async (req, res) => {
-  try {
-    const d = req.body;
-    const id = generarID('UNI');
-    await db.query(`
-      INSERT INTO unidades_medida (unidad_id, empresa_id, nombre, abreviatura, clave_sat, activo)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `, [id, d.empresa_id, d.nombre, d.abreviatura, d.clave_sat, d.activo || 'Y']);
-    res.json({ success: true, id, unidad_id: id });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.put('/api/unidades/:id', async (req, res) => {
-  try {
-    const d = req.body;
-    await db.query(`
-      UPDATE unidades_medida SET nombre=?, abreviatura=?, clave_sat=?, activo=?
-      WHERE unidad_id=?
-    `, [d.nombre, d.abreviatura, d.clave_sat, d.activo, req.params.id]);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.delete('/api/unidades/:id', async (req, res) => {
-  try {
-    await db.query('UPDATE unidades_medida SET activo = "N" WHERE unidad_id = ?', [req.params.id]);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
 // DETALLE DE CORTE (para modal)
 app.get('/api/cortes/:id', async (req, res) => {
   try {
@@ -2395,10 +2310,18 @@ app.get('/api/cortes/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
+// ==================== HEALTH ====================
+
+app.get('/health', async (req, res) => {
+  try {
+    await db.query('SELECT 1');
+    res.json({ status: 'ok', db: 'connected' });
+  } catch (e) {
+    res.json({ status: 'ok', db: 'error', error: e.message });
+  }
+});
+
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
-
-
-
-
