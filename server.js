@@ -192,9 +192,20 @@ app.post('/api/sucursales', async (req, res) => {
     const d = req.body;
     const id = generarID('SUC');
     await db.query(`
-      INSERT INTO sucursales (sucursal_id, empresa_id, nombre, direccion, telefono, email, responsable, activa)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [id, d.empresa_id, d.nombre, d.direccion, d.telefono, d.email, d.responsable, d.activo || 'Y']);
+      INSERT INTO sucursales (
+        sucursal_id, empresa_id, codigo, nombre, tipo,
+        direccion, colonia, ciudad, estado, codigo_postal,
+        telefono, email, responsable,
+        horario_apertura, horario_cierre, dias_operacion,
+        permite_venta, permite_compra, permite_traspaso, activa
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      id, d.empresa_id, d.codigo, d.nombre, d.tipo || 'TIENDA',
+      d.direccion, d.colonia, d.ciudad, d.estado, d.codigo_postal,
+      d.telefono, d.email, d.responsable,
+      d.horario_apertura, d.horario_cierre, d.dias_operacion || 'L,M,X,J,V,S',
+      d.permite_venta || 'Y', d.permite_compra || 'Y', d.permite_traspaso || 'Y', d.activo || 'Y'
+    ]);
     res.json({ success: true, id, sucursal_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -205,9 +216,21 @@ app.put('/api/sucursales/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE sucursales SET nombre=?, direccion=?, telefono=?, email=?, responsable=?, activa=?
+      UPDATE sucursales SET 
+        codigo=?, nombre=?, tipo=?,
+        direccion=?, colonia=?, ciudad=?, estado=?, codigo_postal=?,
+        telefono=?, email=?, responsable=?,
+        horario_apertura=?, horario_cierre=?, dias_operacion=?,
+        permite_venta=?, permite_compra=?, permite_traspaso=?, activa=?
       WHERE sucursal_id=?
-    `, [d.nombre, d.direccion, d.telefono, d.email, d.responsable, d.activo, req.params.id]);
+    `, [
+      d.codigo, d.nombre, d.tipo,
+      d.direccion, d.colonia, d.ciudad, d.estado, d.codigo_postal,
+      d.telefono, d.email, d.responsable,
+      d.horario_apertura, d.horario_cierre, d.dias_operacion,
+      d.permite_venta, d.permite_compra, d.permite_traspaso, d.activo,
+      req.params.id
+    ]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -222,7 +245,6 @@ app.delete('/api/sucursales/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
 // ==================== USUARIOS ====================
 
 app.get('/api/usuarios/:empresaID', async (req, res) => {
@@ -288,7 +310,7 @@ app.delete('/api/usuarios/:id', async (req, res) => {
 app.get('/api/impuestos/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT *, valor as tasa FROM impuestos WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      'SELECT * FROM impuestos WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, impuestos: rows, data: rows });
@@ -300,7 +322,7 @@ app.get('/api/impuestos/:empresaID', async (req, res) => {
 app.get('/api/impuestos/:empresaID/todos', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT *, valor as tasa FROM impuestos WHERE empresa_id = ? ORDER BY nombre',
+      'SELECT * FROM impuestos WHERE empresa_id = ? ORDER BY nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, impuestos: rows });
@@ -314,9 +336,14 @@ app.post('/api/impuestos', async (req, res) => {
     const d = req.body;
     const id = generarID('IMP');
     await db.query(`
-      INSERT INTO impuestos (impuesto_id, empresa_id, nombre, tipo, valor, aplica_ventas, aplica_compras, activo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
-    `, [id, d.empresa_id, d.nombre, d.tipo || 'PORCENTAJE', d.tasa || d.valor || 0, d.aplica_ventas || 'Y', d.aplica_compras || 'Y']);
+      INSERT INTO impuestos (
+        impuesto_id, empresa_id, nombre, tipo, valor,
+        incluido_en_precio, aplica_ventas, aplica_compras, cuenta_contable, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [
+      id, d.empresa_id, d.nombre, d.tipo || 'PORCENTAJE', d.valor || 0,
+      d.incluido_en_precio || 'Y', d.aplica_ventas || 'Y', d.aplica_compras || 'Y', d.cuenta_contable
+    ]);
     res.json({ success: true, id, impuesto_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -327,9 +354,15 @@ app.put('/api/impuestos/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE impuestos SET nombre=?, tipo=?, valor=?, aplica_ventas=?, aplica_compras=?, activo=?
+      UPDATE impuestos SET 
+        nombre=?, tipo=?, valor=?,
+        incluido_en_precio=?, aplica_ventas=?, aplica_compras=?, cuenta_contable=?, activo=?
       WHERE impuesto_id=?
-    `, [d.nombre, d.tipo || 'PORCENTAJE', d.tasa || d.valor, d.aplica_ventas || 'Y', d.aplica_compras || 'Y', d.activo || 'Y', req.params.id]);
+    `, [
+      d.nombre, d.tipo, d.valor,
+      d.incluido_en_precio, d.aplica_ventas, d.aplica_compras, d.cuenta_contable, d.activo,
+      req.params.id
+    ]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -344,13 +377,12 @@ app.delete('/api/impuestos/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
 // ==================== MÉTODOS DE PAGO ====================
 
 app.get('/api/metodos-pago/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT *, codigo_sat as clave_sat FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY orden, nombre',
+      'SELECT * FROM metodos_pago WHERE empresa_id = ? AND activo = "Y" ORDER BY orden, nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, metodos: rows });
@@ -362,7 +394,7 @@ app.get('/api/metodos-pago/:empresaID', async (req, res) => {
 app.get('/api/metodos-pago/:empresaID/todos', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT *, codigo_sat as clave_sat FROM metodos_pago WHERE empresa_id = ? ORDER BY orden, nombre',
+      'SELECT * FROM metodos_pago WHERE empresa_id = ? ORDER BY orden, nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, metodos: rows });
@@ -376,9 +408,16 @@ app.post('/api/metodos-pago', async (req, res) => {
     const d = req.body;
     const id = generarID('MP');
     await db.query(`
-      INSERT INTO metodos_pago (metodo_pago_id, empresa_id, nombre, tipo, codigo_sat, requiere_referencia, orden, activo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
-    `, [id, d.empresa_id, d.nombre, d.tipo || 'EFECTIVO', d.clave_sat || d.codigo_sat, d.requiere_referencia || 'N', d.orden || 0]);
+      INSERT INTO metodos_pago (
+        metodo_pago_id, empresa_id, nombre, tipo,
+        requiere_referencia, permite_cambio, comision_porcentaje, comision_fija,
+        cuenta_contable, orden, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [
+      id, d.empresa_id, d.nombre, d.tipo || 'EFECTIVO',
+      d.requiere_referencia || 'N', d.permite_cambio || 'N', d.comision_porcentaje || 0, d.comision_fija || 0,
+      d.cuenta_contable, d.orden || 0
+    ]);
     res.json({ success: true, id, metodo_pago_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -389,9 +428,15 @@ app.put('/api/metodos-pago/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE metodos_pago SET nombre=?, tipo=?, codigo_sat=?, requiere_referencia=?, activo=?
+      UPDATE metodos_pago SET 
+        nombre=?, tipo=?, requiere_referencia=?, permite_cambio=?,
+        comision_porcentaje=?, comision_fija=?, cuenta_contable=?, orden=?, activo=?
       WHERE metodo_pago_id=?
-    `, [d.nombre, d.tipo, d.clave_sat || d.codigo_sat, d.requiere_referencia, d.activo || 'Y', req.params.id]);
+    `, [
+      d.nombre, d.tipo, d.requiere_referencia, d.permite_cambio,
+      d.comision_porcentaje, d.comision_fija, d.cuenta_contable, d.orden, d.activo,
+      req.params.id
+    ]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -412,7 +457,7 @@ app.delete('/api/metodos-pago/:id', async (req, res) => {
 app.get('/api/unidades/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT *, codigo_sat as clave_sat FROM unidades_medida WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      'SELECT * FROM unidades_medida WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, unidades: rows });
@@ -424,7 +469,7 @@ app.get('/api/unidades/:empresaID', async (req, res) => {
 app.get('/api/unidades/:empresaID/todos', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT *, codigo_sat as clave_sat FROM unidades_medida WHERE empresa_id = ? ORDER BY nombre',
+      'SELECT * FROM unidades_medida WHERE empresa_id = ? ORDER BY nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, unidades: rows });
@@ -436,11 +481,11 @@ app.get('/api/unidades/:empresaID/todos', async (req, res) => {
 app.post('/api/unidades', async (req, res) => {
   try {
     const d = req.body;
-    const id = d.abreviatura || generarID('UNI');
+    const id = d.abreviatura ? d.abreviatura.toUpperCase() : generarID('UNI');
     await db.query(`
-      INSERT INTO unidades_medida (unidad_id, empresa_id, nombre, abreviatura, codigo_sat, activo)
-      VALUES (?, ?, ?, ?, ?, 'Y')
-    `, [id, d.empresa_id, d.nombre, d.abreviatura, d.clave_sat || d.codigo_sat]);
+      INSERT INTO unidades_medida (unidad_id, empresa_id, nombre, abreviatura, tipo, es_sistema, activo)
+      VALUES (?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.nombre, d.abreviatura, d.tipo || 'UNIDAD', d.es_sistema || 'N']);
     res.json({ success: true, id, unidad_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -451,9 +496,9 @@ app.put('/api/unidades/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE unidades_medida SET nombre=?, abreviatura=?, codigo_sat=?, activo=?
+      UPDATE unidades_medida SET nombre=?, abreviatura=?, tipo=?, es_sistema=?, activo=?
       WHERE unidad_id=?
-    `, [d.nombre, d.abreviatura, d.clave_sat || d.codigo_sat, d.activo || 'Y', req.params.id]);
+    `, [d.nombre, d.abreviatura, d.tipo, d.es_sistema, d.activo, req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
