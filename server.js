@@ -457,8 +457,7 @@ app.delete('/api/metodos-pago/:id', async (req, res) => {
 app.get('/api/unidades/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM unidades_medida WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
-      [req.params.empresaID]
+      'SELECT * FROM unidades_medida WHERE activo = "Y" ORDER BY nombre'
     );
     res.json({ success: true, unidades: rows });
   } catch (e) {
@@ -469,46 +468,9 @@ app.get('/api/unidades/:empresaID', async (req, res) => {
 app.get('/api/unidades/:empresaID/todos', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM unidades_medida WHERE empresa_id = ? ORDER BY nombre',
-      [req.params.empresaID]
+      'SELECT * FROM unidades_medida ORDER BY nombre'
     );
     res.json({ success: true, unidades: rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.post('/api/unidades', async (req, res) => {
-  try {
-    const d = req.body;
-    const id = d.abreviatura ? d.abreviatura.toUpperCase() : generarID('UNI');
-    await db.query(`
-      INSERT INTO unidades_medida (unidad_id, empresa_id, nombre, abreviatura, tipo, es_sistema, activo)
-      VALUES (?, ?, ?, ?, ?, ?, 'Y')
-    `, [id, d.empresa_id, d.nombre, d.abreviatura, d.tipo || 'UNIDAD', d.es_sistema || 'N']);
-    res.json({ success: true, id, unidad_id: id });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.put('/api/unidades/:id', async (req, res) => {
-  try {
-    const d = req.body;
-    await db.query(`
-      UPDATE unidades_medida SET nombre=?, abreviatura=?, tipo=?, es_sistema=?, activo=?
-      WHERE unidad_id=?
-    `, [d.nombre, d.abreviatura, d.tipo, d.es_sistema, d.activo, req.params.id]);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-app.delete('/api/unidades/:id', async (req, res) => {
-  try {
-    await db.query('UPDATE unidades_medida SET activo = "N" WHERE unidad_id = ?', [req.params.id]);
-    res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
