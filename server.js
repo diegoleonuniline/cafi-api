@@ -1813,6 +1813,445 @@ app.get('/health', async (req, res) => {
   }
 });
 
+
+// ==================== REPORTES ====================
+
+// VENTAS POR PERÍODO
+app.get('/api/reportes/ventas-periodo', async (req, res) => {
+  try {
+    const { empresa_id, sucursal_id, desde, hasta, agrupar } = req.query;
+    
+    let groupBy, selectPeriodo;
+    switch(agrupar) {
+      case 'semana':
+        groupBy = 'YEARWEEK(fecha_hora)';
+        selectPeriodo = "CONCAT('Semana ', WEEK(fecha_hora), ' - ', YEAR(fecha_hora))";
+        break;
+      case 'mes':
+        groupBy = "DATE_FORMAT(fecha_hora, '%Y-%m')";
+        selectPeriodo = "DATE_FORMAT(fecha_hora, '%M %Y')";
+        break;
+      default:
+        groupBy = 'DATE(fecha_hora)';
+        selectPeriodo = "DATE_FORMAT(fecha_hora, '%d/%m/%Y')";
+    }
+    
+    const [rows] = await db.query(`
+      SELECT 
+        ${selectPeriodo} as periodo,
+        COUNT(*) as ventas,
+        COALESCE(SUM(subtotal), 0) as subtotal,
+        COALESCE(SUM(total - subtotal), 0) as impuestos,
+        COALESCE(SUM(total), 0) as total,
+        COALESCE(SUM((SELECT COUNT(*) FROM detalle_venta dv WHERE dv.venta_id = v.venta_id)), 0) as productos
+      FROM ventas v
+      WHERE v.empresa_id = ? 
+        AND DATE(v.fecha_hora) >= ? 
+        AND DATE(v.fecha_hora) <= ?
+        AND v.estatus = 'PAGADA'
+      GROUP BY ${groupBy}
+      ORDER BY MIN(fecha_hora)
+    `, [empresa_id, desde, hasta]);
+    
+    res.json({ success: true, datos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// VENTAS POR USUARIO
+app.get('/api/reportes/ventas-usuario', async (req, res) => {
+  try {
+    const { empresa_id, desde, hasta } = req.query;
+    
+    const [rows] = await db.query(`
+      SELECT 
+        u.nombre as usuario,
+        COUNT(v.venta_id) as ventas,
+        COALESCE(SUM(v.total), 0) as total,
+        COALESCE(AVG(v.total), 0) as promedio,
+        COALESCE(SUM((SELECT SUM(cantidad) FROM detalle_venta dv WHERE dv.venta_id = v.venta_id)), 0) as productos
+      FROM usuarios u
+      LEFT JOIN ventas v ON u.usuario_id = v.usuario_id 
+        AND DATE(v.fecha_hora) >= ? 
+        AND DATE(v.fecha_hora) <= ?
+        AND v.estatus = 'PAGADA'
+      WHERE u.empresa_id = ? AND u.activo = 'Y'
+      GROUP BY u.usuario_id, u.nombre
+      HAVING ventas > 0
+      ORDER BY total DESC
+    `, [desde, hasta, empresa_id]);
+    
+    res.json({ success: true, datos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PRODUCTOS VENDIDOS
+app.get('/api/reportes/productos-vendidos', async (req, res) => {
+  try {
+    const { empresa_id, desde, hasta, categoria_id, orden } = req.query;
+    
+    let query = `
+      SELECT 
+        p.codigo_barras as codigo,
+        p.nombre as producto,
+        COALESCE(c.nombre, 'Sin categoría') as categoria,
+        COALESCE(SUM(dv.cantidad), 0) as cantidad,
+        COALESCE(SUM(dv.subtotal), 0) as total,
+        COALESCE(SUM(dv.cantidad * p.costo), 0) as costo
+      FROM productos p
+      LEFT JOIN detalle_venta dv ON p.producto_id = dv.producto_id AND dv.estatus = 'ACTIVO'
+      LEFT JOIN ventas v ON dv.venta_id = v.venta_id 
+        AND DATE(v.fecha_hora) >= ? 
+        AND DATE(v.fecha_hora) <= ?
+        AND v.estatus = 'PAGADA'
+      LEFT JOIN categorias c ON p.categoria_id = c.categoria_id
+      WHERE p.empresa_id = ?
+    `;
+    
+    const params = [desde, hasta, empresa_id];
+    
+    if (categoria_id) {
+      query += ' AND p.categoria_id = ?';
+      params.push(categoria_id);
+    }
+    
+    query += ' GROUP BY p.producto_id, p.codigo_barras, p.nombre, c.nombre HAVING cantidad > 0';
+    query += orden === 'monto' ? ' ORDER BY total DESC' : ' ORDER BY cantidad DESC';
+    query += ' LIMIT 100';
+    
+    const [rows] = await db.query(query, params);
+    res.json({ success: true, datos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// CORTES DE CAJA
+app.get('/api/reportes/cortes', async (req, res) => {
+  try {
+    const { empresa_id, desde, hasta, usuario_id } = req.query;
+    
+    let query = `
+      SELECT 
+        t.turno_id as corte_id,
+        t.turno_id as folio,
+        t.fecha_cierre,
+        u.nombre as usuario_nombre,
+        t.turno_id as turno_folio,
+        t.efectivo_esperado as total_esperado,
+        t.efectivo_declarado as total_declarado,
+        t.observaciones
+      FROM turnos t
+      JOIN usuarios u ON t.usuario_id = u.usuario_id
+      WHERE t.empresa_id = ? 
+        AND t.estado = 'CERRADO'
+        AND DATE(t.fecha_cierre) >= ? 
+        AND DATE(t.fecha_cierre) <= ?
+    `;
+    
+    const params = [empresa_id, desde, hasta];
+    
+    if (usuario_id) {
+      query += ' AND t.usuario_id = ?';
+      params.push(usuario_id);
+    }
+    
+    query += ' ORDER BY t.fecha_cierre DESC';
+    
+    const [rows] = await db.query(query, params);
+    res.json({ success: true, cortes: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// DETALLE DE CORTE
+app.get('/api/cortes/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT 
+        t.*,
+        u.nombre as usuario_nombre
+      FROM turnos t
+      JOIN usuarios u ON t.usuario_id = u.usuario_id
+      WHERE t.turno_id = ?
+    `, [req.params.id]);
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Corte no encontrado' });
+    }
+    
+    res.json({ success: true, corte: rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PAGOS RECIBIDOS
+app.get('/api/reportes/pagos', async (req, res) => {
+  try {
+    const { empresa_id, desde, hasta, metodo_id, estado } = req.query;
+    
+    let query = `
+      SELECT 
+        p.pago_id,
+        p.pago_id as folio,
+        p.fecha_hora as fecha,
+        v.folio as venta_folio,
+        c.nombre as cliente_nombre,
+        mp.nombre as metodo_nombre,
+        p.monto,
+        p.referencia,
+        p.estatus as estado,
+        u.nombre as usuario_nombre
+      FROM pagos p
+      LEFT JOIN ventas v ON p.venta_id = v.venta_id
+      LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
+      JOIN metodos_pago mp ON p.metodo_pago_id = mp.metodo_pago_id
+      JOIN usuarios u ON p.usuario_id = u.usuario_id
+      WHERE p.empresa_id = ?
+        AND DATE(p.fecha_hora) >= ?
+        AND DATE(p.fecha_hora) <= ?
+    `;
+    
+    const params = [empresa_id, desde, hasta];
+    
+    if (metodo_id) {
+      query += ' AND p.metodo_pago_id = ?';
+      params.push(metodo_id);
+    }
+    
+    if (estado) {
+      query += ' AND p.estatus = ?';
+      params.push(estado);
+    }
+    
+    query += ' ORDER BY p.fecha_hora DESC LIMIT 500';
+    
+    const [rows] = await db.query(query, params);
+    res.json({ success: true, pagos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// MOVIMIENTOS DE CAJA (REPORTE)
+app.get('/api/reportes/movimientos', async (req, res) => {
+  try {
+    const { empresa_id, desde, hasta, tipo } = req.query;
+    
+    let query = `
+      SELECT 
+        m.fecha_hora as fecha,
+        m.tipo,
+        m.concepto,
+        m.monto,
+        u.nombre as usuario_nombre,
+        t.turno_id as turno_folio,
+        m.notas as observaciones
+      FROM movimientos_caja m
+      JOIN usuarios u ON m.usuario_id = u.usuario_id
+      LEFT JOIN turnos t ON m.turno_id = t.turno_id
+      WHERE m.empresa_id = ?
+        AND DATE(m.fecha_hora) >= ?
+        AND DATE(m.fecha_hora) <= ?
+    `;
+    
+    const params = [empresa_id, desde, hasta];
+    
+    if (tipo) {
+      query += ' AND m.tipo = ?';
+      params.push(tipo);
+    }
+    
+    query += ' ORDER BY m.fecha_hora DESC';
+    
+    const [rows] = await db.query(query, params);
+    res.json({ success: true, movimientos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// DEVOLUCIONES
+app.get('/api/reportes/devoluciones', async (req, res) => {
+  try {
+    const { empresa_id, desde, hasta, motivo } = req.query;
+    
+    let query = `
+      SELECT 
+        d.devolucion_id,
+        d.devolucion_id as folio,
+        d.fecha_hora as fecha,
+        v.folio as venta_folio,
+        c.nombre as cliente_nombre,
+        p.nombre as producto_nombre,
+        COALESCE(d.cantidad, 1) as cantidad,
+        d.monto,
+        COALESCE(d.motivo, 'OTRO') as motivo,
+        d.notas,
+        u.nombre as usuario_nombre
+      FROM devoluciones d
+      LEFT JOIN ventas v ON d.venta_id = v.venta_id
+      LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
+      LEFT JOIN productos p ON d.producto_id = p.producto_id
+      JOIN usuarios u ON d.usuario_id = u.usuario_id
+      WHERE d.empresa_id = ?
+        AND DATE(d.fecha_hora) >= ?
+        AND DATE(d.fecha_hora) <= ?
+    `;
+    
+    const params = [empresa_id, desde, hasta];
+    
+    if (motivo) {
+      query += ' AND d.motivo = ?';
+      params.push(motivo);
+    }
+    
+    query += ' ORDER BY d.fecha_hora DESC';
+    
+    const [rows] = await db.query(query, params);
+    res.json({ success: true, devoluciones: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// CANCELACIONES
+app.get('/api/reportes/cancelaciones', async (req, res) => {
+  try {
+    const { empresa_id, desde, hasta } = req.query;
+    
+    const [rows] = await db.query(`
+      SELECT 
+        v.folio,
+        v.fecha_hora as fecha_venta,
+        v.fecha_cancelacion,
+        c.nombre as cliente_nombre,
+        v.total,
+        v.motivo_cancelacion as motivo,
+        u.nombre as autorizo
+      FROM ventas v
+      LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
+      LEFT JOIN usuarios u ON v.cancelado_por = u.usuario_id
+      WHERE v.empresa_id = ?
+        AND v.estatus = 'CANCELADA'
+        AND DATE(v.fecha_cancelacion) >= ?
+        AND DATE(v.fecha_cancelacion) <= ?
+      ORDER BY v.fecha_cancelacion DESC
+    `, [empresa_id, desde, hasta]);
+    
+    res.json({ success: true, cancelaciones: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// CLIENTES FRECUENTES
+app.get('/api/reportes/clientes-frecuentes', async (req, res) => {
+  try {
+    const { empresa_id, desde, hasta, top } = req.query;
+    const limite = parseInt(top) || 10;
+    
+    const [rows] = await db.query(`
+      SELECT 
+        c.nombre,
+        c.telefono,
+        COUNT(v.venta_id) as compras,
+        COALESCE(SUM(v.total), 0) as total,
+        COALESCE(AVG(v.total), 0) as promedio,
+        MAX(v.fecha_hora) as ultima_compra
+      FROM clientes c
+      JOIN ventas v ON c.cliente_id = v.cliente_id
+        AND DATE(v.fecha_hora) >= ?
+        AND DATE(v.fecha_hora) <= ?
+        AND v.estatus = 'PAGADA'
+      WHERE c.empresa_id = ?
+      GROUP BY c.cliente_id, c.nombre, c.telefono
+      ORDER BY compras DESC, total DESC
+      LIMIT ?
+    `, [desde, hasta, empresa_id, limite]);
+    
+    res.json({ success: true, clientes: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// CUENTAS POR COBRAR
+app.get('/api/reportes/cuentas-cobrar', async (req, res) => {
+  try {
+    const { empresa_id, cliente_id } = req.query;
+    
+    let query = `
+      SELECT 
+        v.folio,
+        v.fecha_hora as fecha,
+        c.nombre as cliente_nombre,
+        v.total,
+        COALESCE(v.pagado, 0) as pagado,
+        DATE_ADD(v.fecha_hora, INTERVAL 30 DAY) as vencimiento
+      FROM ventas v
+      JOIN clientes c ON v.cliente_id = c.cliente_id
+      WHERE v.empresa_id = ?
+        AND v.tipo_venta = 'CREDITO'
+        AND v.estatus = 'PAGADA'
+        AND v.total > COALESCE(v.pagado, 0)
+    `;
+    
+    const params = [empresa_id];
+    
+    if (cliente_id) {
+      query += ' AND v.cliente_id = ?';
+      params.push(cliente_id);
+    }
+    
+    query += ' ORDER BY v.fecha_hora DESC';
+    
+    const [rows] = await db.query(query, params);
+    res.json({ success: true, cuentas: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// USUARIOS (para select de filtros)
+app.get('/api/usuarios/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT usuario_id, nombre, email, rol FROM usuarios WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, usuarios: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
+
+
+
+
