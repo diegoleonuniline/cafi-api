@@ -2746,7 +2746,190 @@ app.delete('/api/conceptos-gasto/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+// ==================== GASTOS ====================
 
+app.get('/api/gastos/kpis/:empresaId', async (req, res) => {
+    try {
+        const { empresaId } = req.params;
+        
+        const [hoyResult] = await db.query(`
+            SELECT COALESCE(SUM(total), 0) as total
+            FROM gastos WHERE empresa_id = ? AND activo = 'Y' AND DATE(fecha) = CURDATE()
+        `, [empresaId]);
+        
+        const [semanaResult] = await db.query(`
+            SELECT COALESCE(SUM(total), 0) as total
+            FROM gastos WHERE empresa_id = ? AND activo = 'Y' 
+            AND YEARWEEK(fecha, 1) = YEARWEEK(CURDATE(), 1)
+        `, [empresaId]);
+        
+        const [mesResult] = await db.query(`
+            SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as registros
+            FROM gastos WHERE empresa_id = ? AND activo = 'Y'
+            AND YEAR(fecha) = YEAR(CURDATE()) AND MONTH(fecha) = MONTH(CURDATE())
+        `, [empresaId]);
+        
+        const [porCategoria] = await db.query(`
+            SELECT COALESCE(cg.nombre, 'Sin categoría') as categoria, COALESCE(SUM(g.total), 0) as total
+            FROM gastos g
+            LEFT JOIN categorias_gasto cg ON g.categoria_gasto_id = cg.categoria_gasto_id
+            WHERE g.empresa_id = ? AND g.activo = 'Y'
+            AND YEAR(g.fecha) = YEAR(CURDATE()) AND MONTH(g.fecha) = MONTH(CURDATE())
+            GROUP BY g.categoria_gasto_id ORDER BY total DESC LIMIT 8
+        `, [empresaId]);
+        
+        const [porDia] = await db.query(`
+            SELECT DATE_FORMAT(fecha, '%d/%m') as dia, COALESCE(SUM(total), 0) as total
+            FROM gastos WHERE empresa_id = ? AND activo = 'Y'
+            AND fecha >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+            GROUP BY DATE(fecha) ORDER BY fecha ASC
+        `, [empresaId]);
+        
+        res.json({
+            success: true,
+            hoy: hoyResult[0].total,
+            semana: semanaResult[0].total,
+            mes: mesResult[0].total,
+            registros: mesResult[0].registros,
+            porCategoria,
+            porDia
+        });
+    } catch (e) {
+        console.error('Error KPIs gastos:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.get('/api/gastos/:empresaId', async (req, res) => {
+    try {
+        const { empresaId } = req.params;
+        const { desde, hasta, categoria, estado, page = 1, limit = 20 } = req.query;
+        const offset = (page - 1) * limit;
+        
+        let where = 'g.empresa_id = ? AND g.activo = "Y"';
+        const params = [empresaId];
+        
+        if (desde) { where += ' AND g.fecha >= ?'; params.push(desde); }
+        if (hasta) { where += ' AND g.fecha <= ?'; params.push(hasta); }
+        if (categoria) { where += ' AND g.categoria_gasto_id = ?'; params.push(categoria); }
+        if (estado) { where += ' AND g.estado = ?'; params.push(estado); }
+        
+        const [countResult] = await db.query(`SELECT COUNT(*) as total FROM gastos g WHERE ${where}`, params);
+        
+        const [gastos] = await db.query(`
+            SELECT g.*, cg.nombre as categoria_nombre, co.nombre as concepto_nombre,
+                   mp.nombre as metodo_pago_nombre, s.nombre as sucursal_nombre
+            FROM gastos g
+            LEFT JOIN categorias_gasto cg ON g.categoria_gasto_id = cg.categoria_gasto_id
+            LEFT JOIN conceptos_gasto co ON g.concepto_gasto_id = co.concepto_gasto_id
+            LEFT JOIN metodos_pago mp ON g.metodo_pago_id = mp.metodo_pago_id
+            LEFT JOIN sucursales s ON g.sucursal_id = s.sucursal_id
+            WHERE ${where} ORDER BY g.fecha DESC, g.gasto_id DESC LIMIT ? OFFSET ?
+        `, [...params, parseInt(limit), parseInt(offset)]);
+        
+        const [totalesResult] = await db.query(`
+            SELECT COALESCE(SUM(subtotal), 0) as subtotal, COALESCE(SUM(iva), 0) as iva, COALESCE(SUM(total), 0) as total
+            FROM gastos g WHERE ${where}
+        `, params);
+        
+        res.json({ success: true, gastos, total: countResult[0].total, totales: totalesResult[0] });
+    } catch (e) {
+        console.error('Error gastos:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.post('/api/gastos', async (req, res) => {
+    try {
+        const d = req.body;
+        const [result] = await db.query(`
+            INSERT INTO gastos (
+                empresa_id, sucursal_id, categoria_gasto_id, concepto_gasto_id,
+                fecha, numero_documento, descripcion, proveedor_id, proveedor_nombre,
+                subtotal, iva, isr_retenido, iva_retenido, total,
+                metodo_pago_id, cuenta_bancaria_id, referencia_pago,
+                tiene_factura, uuid_factura, estado
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+            d.empresa_id, d.sucursal_id || null, d.categoria_gasto_id || null, d.concepto_gasto_id || null,
+            d.fecha, d.numero_documento, d.descripcion, d.proveedor_id || null, d.proveedor_nombre,
+            d.subtotal || 0, d.iva || 0, d.isr_retenido || 0, d.iva_retenido || 0, d.total || 0,
+            d.metodo_pago_id || null, d.cuenta_bancaria_id || null, d.referencia_pago,
+            d.tiene_factura || 'N', d.uuid_factura, d.estado || 'PAGADO'
+        ]);
+        res.json({ success: true, gasto_id: result.insertId });
+    } catch (e) {
+        console.error('Error crear gasto:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.put('/api/gastos/:id', async (req, res) => {
+    try {
+        const d = req.body;
+        await db.query(`
+            UPDATE gastos SET
+                sucursal_id=?, categoria_gasto_id=?, concepto_gasto_id=?,
+                fecha=?, numero_documento=?, descripcion=?, proveedor_id=?, proveedor_nombre=?,
+                subtotal=?, iva=?, isr_retenido=?, iva_retenido=?, total=?,
+                metodo_pago_id=?, cuenta_bancaria_id=?, referencia_pago=?,
+                tiene_factura=?, uuid_factura=?, estado=?
+            WHERE gasto_id=?
+        `, [
+            d.sucursal_id || null, d.categoria_gasto_id || null, d.concepto_gasto_id || null,
+            d.fecha, d.numero_documento, d.descripcion, d.proveedor_id || null, d.proveedor_nombre,
+            d.subtotal || 0, d.iva || 0, d.isr_retenido || 0, d.iva_retenido || 0, d.total || 0,
+            d.metodo_pago_id || null, d.cuenta_bancaria_id || null, d.referencia_pago,
+            d.tiene_factura || 'N', d.uuid_factura, d.estado || 'PAGADO',
+            req.params.id
+        ]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.delete('/api/gastos/:id', async (req, res) => {
+    try {
+        await db.query('UPDATE gastos SET activo = "N" WHERE gasto_id = ?', [req.params.id]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.get('/api/gastos/exportar/:empresaId', async (req, res) => {
+    try {
+        const { empresaId } = req.params;
+        const { desde, hasta } = req.query;
+        
+        let where = 'g.empresa_id = ? AND g.activo = "Y"';
+        const params = [empresaId];
+        if (desde) { where += ' AND g.fecha >= ?'; params.push(desde); }
+        if (hasta) { where += ' AND g.fecha <= ?'; params.push(hasta); }
+        
+        const [gastos] = await db.query(`
+            SELECT g.fecha, g.numero_documento, cg.nombre as categoria, co.nombre as concepto,
+                   g.descripcion, g.proveedor_nombre, g.subtotal, g.iva, g.total, g.estado,
+                   CASE WHEN g.tiene_factura = 'Y' THEN 'Sí' ELSE 'No' END as factura
+            FROM gastos g
+            LEFT JOIN categorias_gasto cg ON g.categoria_gasto_id = cg.categoria_gasto_id
+            LEFT JOIN conceptos_gasto co ON g.concepto_gasto_id = co.concepto_gasto_id
+            WHERE ${where} ORDER BY g.fecha DESC
+        `, params);
+        
+        let csv = 'Fecha,Documento,Categoría,Concepto,Descripción,Proveedor,Subtotal,IVA,Total,Estado,Factura\n';
+        gastos.forEach(g => {
+            csv += `${g.fecha},${g.numero_documento || ''},${g.categoria || ''},${g.concepto || ''},"${(g.descripcion || '').replace(/"/g, '""')}",${g.proveedor_nombre || ''},${g.subtotal},${g.iva},${g.total},${g.estado},${g.factura}\n`;
+        });
+        
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename=gastos_${desde}_${hasta}.csv`);
+        res.send('\uFEFF' + csv);
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
