@@ -1188,6 +1188,473 @@ app.get('/health', async (req, res) => {
   }
 });
 
+Pos ventas api · JS
+Copiar
+
+// ==================== ENDPOINTS MIS VENTAS DEL TURNO ====================
+// Agregar estos endpoints a server.js
+
+// OBTENER VENTAS DEL TURNO
+app.get('/api/ventas/turno/:turnoID', async (req, res) => {
+    try {
+        const { turnoID } = req.params;
+        
+        const [ventas] = await db.query(`
+            SELECT v.*, 
+                   c.nombre as cliente_nombre,
+                   u.nombre as usuario_nombre,
+                   (SELECT COUNT(*) FROM detalle_venta WHERE venta_id = v.venta_id AND estatus != 'CANCELADO') as num_productos
+            FROM ventas v
+            LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
+            LEFT JOIN usuarios u ON v.usuario_id = u.usuario_id
+            WHERE v.turno_id = ?
+            ORDER BY v.fecha_hora DESC
+        `, [turnoID]);
+        
+        res.json({ success: true, ventas });
+    } catch (e) {
+        console.error('Error obteniendo ventas del turno:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// DETALLE COMPLETO DE VENTA (con productos, pagos e historial)
+app.get('/api/ventas/detalle-completo/:ventaID', async (req, res) => {
+    try {
+        const { ventaID } = req.params;
+        
+        // Venta
+        const [ventas] = await db.query(`
+            SELECT v.*, 
+                   c.nombre as cliente_nombre,
+                   u.nombre as usuario_nombre
+            FROM ventas v
+            LEFT JOIN clientes c ON v.cliente_id = c.cliente_id
+            LEFT JOIN usuarios u ON v.usuario_id = u.usuario_id
+            WHERE v.venta_id = ?
+        `, [ventaID]);
+        
+        if (ventas.length === 0) {
+            return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+        }
+        
+        // Productos
+        const [productos] = await db.query(`
+            SELECT d.*, 
+                   p.nombre as producto_nombre,
+                   p.codigo_barras,
+                   p.unidad_venta as unidad
+            FROM detalle_venta d
+            LEFT JOIN productos p ON d.producto_id = p.producto_id
+            WHERE d.venta_id = ?
+            ORDER BY d.detalle_id
+        `, [ventaID]);
+        
+        // Pagos
+        const [pagos] = await db.query(`
+            SELECT p.*,
+                   mp.nombre as metodo_nombre,
+                   mp.tipo
+            FROM pagos p
+            LEFT JOIN metodos_pago mp ON p.metodo_pago_id = mp.metodo_pago_id
+            WHERE p.venta_id = ?
+            ORDER BY p.fecha_hora DESC
+        `, [ventaID]);
+        
+        // Historial
+        const [historial] = await db.query(`
+            SELECT h.*,
+                   u.nombre as usuario_nombre
+            FROM venta_historial h
+            LEFT JOIN usuarios u ON h.usuario_id = u.usuario_id
+            WHERE h.venta_id = ?
+            ORDER BY h.fecha DESC
+        `, [ventaID]);
+        
+        res.json({
+            success: true,
+            venta: ventas[0],
+            productos,
+            pagos,
+            historial
+        });
+    } catch (e) {
+        console.error('Error obteniendo detalle:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// CANCELAR VENTA COMPLETA
+app.post('/api/ventas/cancelar-completa/:ventaID', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const { ventaID } = req.params;
+        const { motivo_cancelacion, cancelado_por, autorizado_por } = req.body;
+        
+        // Obtener venta
+        const [ventas] = await conn.query('SELECT * FROM ventas WHERE venta_id = ?', [ventaID]);
+        if (ventas.length === 0) {
+            await conn.rollback();
+            return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+        }
+        
+        const venta = ventas[0];
+        const pagado = parseFloat(venta.pagado) || 0;
+        
+        // Actualizar venta
+        await conn.query(`
+            UPDATE ventas SET 
+                estatus = 'CANCELADA',
+                motivo_cancelacion = ?,
+                cancelado_por = ?,
+                fecha_cancelacion = NOW()
+            WHERE venta_id = ?
+        `, [motivo_cancelacion, cancelado_por, ventaID]);
+        
+        // Cancelar todos los productos
+        await conn.query(`
+            UPDATE detalle_venta SET 
+                estatus = 'CANCELADO',
+                motivo_cancelacion = 'Venta cancelada',
+                cancelado_por = ?,
+                fecha_cancelacion = NOW()
+            WHERE venta_id = ?
+        `, [cancelado_por, ventaID]);
+        
+        // Cancelar pagos
+        await conn.query(`
+            UPDATE pagos SET 
+                estatus = 'CANCELADO'
+            WHERE venta_id = ?
+        `, [ventaID]);
+        
+        // Registrar en historial
+        const historialId = generarID('HIST');
+        await conn.query(`
+            INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, datos_anteriores, fecha)
+            VALUES (?, ?, 'CANCELACION', ?, ?, ?, NOW())
+        `, [
+            historialId, 
+            ventaID, 
+            'Venta cancelada. Motivo: ' + motivo_cancelacion + '. Autorizado por: ' + autorizado_por + '. Devolución: $' + pagado.toFixed(2),
+            cancelado_por,
+            JSON.stringify({ total: venta.total, pagado: pagado, estatus_anterior: venta.estatus })
+        ]);
+        
+        await conn.commit();
+        
+        res.json({ 
+            success: true, 
+            devolucion: pagado,
+            message: 'Venta cancelada correctamente'
+        });
+    } catch (e) {
+        await conn.rollback();
+        console.error('Error cancelando venta:', e);
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// CANCELAR PRODUCTO INDIVIDUAL
+app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const { detalleID } = req.params;
+        const { venta_id, cantidad_cancelar, motivo, cancelado_por, autorizado_por } = req.body;
+        
+        // Obtener detalle
+        const [detalles] = await conn.query('SELECT * FROM detalle_venta WHERE detalle_id = ?', [detalleID]);
+        if (detalles.length === 0) {
+            await conn.rollback();
+            return res.status(404).json({ success: false, error: 'Producto no encontrado' });
+        }
+        
+        const detalle = detalles[0];
+        const precioUnit = parseFloat(detalle.precio_unitario) || 0;
+        const cantidadActual = parseFloat(detalle.cantidad) || 0;
+        const cantidadCancelar = Math.min(parseFloat(cantidad_cancelar), cantidadActual);
+        const devolucion = cantidadCancelar * precioUnit;
+        
+        // Actualizar o cancelar completamente el producto
+        if (cantidadCancelar >= cantidadActual) {
+            // Cancelar todo el producto
+            await conn.query(`
+                UPDATE detalle_venta SET 
+                    estatus = 'CANCELADO',
+                    cantidad_cancelada = ?,
+                    motivo_cancelacion = ?,
+                    cancelado_por = ?,
+                    fecha_cancelacion = NOW()
+                WHERE detalle_id = ?
+            `, [cantidadCancelar, motivo, cancelado_por, detalleID]);
+        } else {
+            // Cancelación parcial - reducir cantidad
+            await conn.query(`
+                UPDATE detalle_venta SET 
+                    cantidad = cantidad - ?,
+                    cantidad_cancelada = COALESCE(cantidad_cancelada, 0) + ?,
+                    subtotal = (cantidad - ?) * precio_unitario
+                WHERE detalle_id = ?
+            `, [cantidadCancelar, cantidadCancelar, cantidadCancelar, detalleID]);
+        }
+        
+        // Actualizar total de la venta
+        const [ventaActual] = await conn.query('SELECT total, pagado FROM ventas WHERE venta_id = ?', [venta_id]);
+        const nuevoTotal = parseFloat(ventaActual[0].total) - devolucion;
+        const pagado = parseFloat(ventaActual[0].pagado) || 0;
+        
+        await conn.query(`
+            UPDATE ventas SET 
+                total = ?,
+                estatus = CASE WHEN ? > ? THEN 'PARCIAL' ELSE estatus END
+            WHERE venta_id = ?
+        `, [nuevoTotal, pagado, nuevoTotal, venta_id]);
+        
+        // Registrar en historial
+        const historialId = generarID('HIST');
+        await conn.query(`
+            INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, datos_anteriores, fecha)
+            VALUES (?, ?, 'PRODUCTO_CANCELADO', ?, ?, ?, NOW())
+        `, [
+            historialId,
+            venta_id,
+            'Producto cancelado: ' + (detalle.descripcion || 'Producto') + ' x' + cantidadCancelar + '. Motivo: ' + motivo + '. Autorizado: ' + autorizado_por + '. Devolución: $' + devolucion.toFixed(2),
+            cancelado_por,
+            JSON.stringify({ producto_id: detalle.producto_id, cantidad_cancelada: cantidadCancelar, precio: precioUnit })
+        ]);
+        
+        await conn.commit();
+        
+        res.json({
+            success: true,
+            devolucion: devolucion,
+            nuevo_total: nuevoTotal
+        });
+    } catch (e) {
+        await conn.rollback();
+        console.error('Error cancelando producto:', e);
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// CAMBIAR MÉTODO DE PAGO
+app.post('/api/ventas/cambiar-pago/:pagoID', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const { pagoID } = req.params;
+        const { venta_id, nuevo_metodo_id, referencia, motivo, modificado_por, autorizado_por } = req.body;
+        
+        // Obtener pago actual
+        const [pagos] = await conn.query(`
+            SELECT p.*, mp.nombre as metodo_nombre 
+            FROM pagos p 
+            LEFT JOIN metodos_pago mp ON p.metodo_pago_id = mp.metodo_pago_id
+            WHERE p.pago_id = ?
+        `, [pagoID]);
+        
+        if (pagos.length === 0) {
+            await conn.rollback();
+            return res.status(404).json({ success: false, error: 'Pago no encontrado' });
+        }
+        
+        const pagoAnterior = pagos[0];
+        
+        // Obtener nombre del nuevo método
+        const [nuevoMetodo] = await conn.query('SELECT nombre FROM metodos_pago WHERE metodo_pago_id = ?', [nuevo_metodo_id]);
+        const nuevoMetodoNombre = nuevoMetodo.length > 0 ? nuevoMetodo[0].nombre : 'Nuevo método';
+        
+        // Cancelar pago anterior
+        await conn.query(`
+            UPDATE pagos SET 
+                estatus = 'CANCELADO',
+                motivo_cancelacion = ?
+            WHERE pago_id = ?
+        `, ['Cambio de método: ' + motivo, pagoID]);
+        
+        // Crear nuevo pago
+        const nuevoPagoId = generarID('PAG');
+        await conn.query(`
+            INSERT INTO pagos (pago_id, empresa_id, sucursal_id, venta_id, turno_id, metodo_pago_id, monto, referencia, usuario_id, reemplaza_pago_id, fecha_hora)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        `, [
+            nuevoPagoId,
+            pagoAnterior.empresa_id,
+            pagoAnterior.sucursal_id,
+            venta_id,
+            pagoAnterior.turno_id,
+            nuevo_metodo_id,
+            pagoAnterior.monto,
+            referencia || null,
+            modificado_por,
+            pagoID
+        ]);
+        
+        // Registrar en historial
+        const historialId = generarID('HIST');
+        await conn.query(`
+            INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, datos_anteriores, fecha)
+            VALUES (?, ?, 'CAMBIO_PAGO', ?, ?, ?, NOW())
+        `, [
+            historialId,
+            venta_id,
+            'Cambio de método de pago: ' + (pagoAnterior.metodo_nombre || 'Anterior') + ' → ' + nuevoMetodoNombre + '. Monto: $' + parseFloat(pagoAnterior.monto).toFixed(2) + '. Motivo: ' + motivo + '. Autorizado: ' + autorizado_por,
+            modificado_por,
+            JSON.stringify({ pago_anterior: pagoID, metodo_anterior: pagoAnterior.metodo_pago_id })
+        ]);
+        
+        await conn.commit();
+        
+        res.json({ success: true, nuevo_pago_id: nuevoPagoId });
+    } catch (e) {
+        await conn.rollback();
+        console.error('Error cambiando pago:', e);
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// REABRIR VENTA
+app.post('/api/ventas/reabrir/:ventaID', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const { ventaID } = req.params;
+        const { usuario_id, autorizado_por } = req.body;
+        
+        // Marcar venta como reabierta
+        await conn.query(`
+            UPDATE ventas SET 
+                reabierta = 'Y',
+                fecha_reapertura = NOW()
+            WHERE venta_id = ?
+        `, [ventaID]);
+        
+        // Registrar en historial
+        const historialId = generarID('HIST');
+        await conn.query(`
+            INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, fecha)
+            VALUES (?, ?, 'REAPERTURA', ?, ?, NOW())
+        `, [
+            historialId,
+            ventaID,
+            'Venta reabierta para agregar productos. Autorizado por: ' + autorizado_por,
+            usuario_id
+        ]);
+        
+        await conn.commit();
+        
+        res.json({ success: true });
+    } catch (e) {
+        await conn.rollback();
+        console.error('Error reabriendo venta:', e);
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// COBRAR COMPLEMENTO (VENTA REABIERTA)
+app.post('/api/ventas/cobrar-complemento/:ventaID', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const { ventaID } = req.params;
+        const { monto_cobrado, metodo_pago_id, cambio, productos_nuevos, nuevo_total, usuario_id, turno_id } = req.body;
+        
+        // Obtener venta
+        const [ventas] = await conn.query('SELECT * FROM ventas WHERE venta_id = ?', [ventaID]);
+        if (ventas.length === 0) {
+            await conn.rollback();
+            return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+        }
+        
+        const venta = ventas[0];
+        const pagadoAnterior = parseFloat(venta.pagado) || 0;
+        
+        // Agregar nuevos productos
+        if (productos_nuevos && productos_nuevos.length > 0) {
+            for (const item of productos_nuevos) {
+                const detalleId = generarID('DET');
+                await conn.query(`
+                    INSERT INTO detalle_venta (
+                        detalle_id, venta_id, producto_id, descripcion, cantidad, unidad_id,
+                        precio_unitario, descuento_pct, subtotal, es_agregado_reapertura
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+                `, [
+                    detalleId,
+                    ventaID,
+                    item.producto_id,
+                    item.descripcion,
+                    item.cantidad,
+                    item.unidad_id || 'PZ',
+                    item.precio_unitario,
+                    item.descuento || 0,
+                    item.subtotal
+                ]);
+            }
+        }
+        
+        // Registrar nuevo pago
+        const pagoId = generarID('PAG');
+        await conn.query(`
+            INSERT INTO pagos (pago_id, empresa_id, sucursal_id, venta_id, turno_id, metodo_pago_id, monto, usuario_id, es_complemento)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+        `, [pagoId, venta.empresa_id, venta.sucursal_id, ventaID, turno_id, metodo_pago_id, monto_cobrado, usuario_id]);
+        
+        // Actualizar venta
+        await conn.query(`
+            UPDATE ventas SET 
+                total = ?,
+                pagado = pagado + ?,
+                cambio = COALESCE(cambio, 0) + ?,
+                estatus = 'PAGADA',
+                reabierta = 'Y'
+            WHERE venta_id = ?
+        `, [nuevo_total, monto_cobrado, cambio, ventaID]);
+        
+        // Registrar en historial
+        const historialId = generarID('HIST');
+        const numNuevos = productos_nuevos ? productos_nuevos.length : 0;
+        await conn.query(`
+            INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, fecha)
+            VALUES (?, ?, 'COMPLEMENTO_PAGO', ?, ?, NOW())
+        `, [
+            historialId,
+            ventaID,
+            'Pago complementario: $' + monto_cobrado.toFixed(2) + '. ' + (numNuevos > 0 ? numNuevos + ' productos agregados. ' : '') + 'Nuevo total: $' + nuevo_total.toFixed(2),
+            usuario_id
+        ]);
+        
+        await conn.commit();
+        
+        res.json({
+            success: true,
+            folio: venta.folio,
+            nuevo_total: nuevo_total,
+            total_pagado: pagadoAnterior + monto_cobrado
+        });
+    } catch (e) {
+        await conn.rollback();
+        console.error('Error cobrando complemento:', e);
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
