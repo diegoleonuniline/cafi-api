@@ -2221,6 +2221,8 @@ app.put('/api/empresas/:id', async (req, res) => {
 
 // ==================== SUCURSALES ====================
 
+// ==================== SUCURSALES ====================
+
 app.get('/api/sucursales/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(
@@ -2238,9 +2240,9 @@ app.post('/api/sucursales', async (req, res) => {
     const d = req.body;
     const id = generarID('SUC');
     await db.query(`
-      INSERT INTO sucursales (sucursal_id, empresa_id, nombre, direccion, telefono, email, encargado, activo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [id, d.empresa_id, d.nombre, d.direccion, d.telefono, d.email, d.encargado, d.activo || 'Y']);
+      INSERT INTO sucursales (sucursal_id, empresa_id, nombre, direccion, telefono, activo)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [id, d.empresa_id, d.nombre, d.direccion, d.telefono, d.activo || 'Y']);
     res.json({ success: true, id, sucursal_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -2251,9 +2253,9 @@ app.put('/api/sucursales/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE sucursales SET nombre=?, direccion=?, telefono=?, email=?, encargado=?, activo=?
+      UPDATE sucursales SET nombre=?, direccion=?, telefono=?, activo=?
       WHERE sucursal_id=?
-    `, [d.nombre, d.direccion, d.telefono, d.email, d.encargado, d.activo, req.params.id]);
+    `, [d.nombre, d.direccion, d.telefono, d.activo, req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -2269,15 +2271,15 @@ app.delete('/api/sucursales/:id', async (req, res) => {
   }
 });
 
-// ==================== USUARIOS CRUD COMPLETO ====================
+// ==================== USUARIOS CRUD ====================
 
-app.get('/api/usuarios/:empresaID/todos', async (req, res) => {
+app.get('/api/usuarios/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(`
       SELECT u.*, s.nombre as sucursal_nombre 
       FROM usuarios u
       LEFT JOIN sucursales s ON u.sucursal_id = s.sucursal_id
-      WHERE u.empresa_id = ? 
+      WHERE u.empresa_id = ? AND u.activo = 'Y'
       ORDER BY u.nombre
     `, [req.params.empresaID]);
     res.json({ success: true, usuarios: rows });
@@ -2303,17 +2305,18 @@ app.post('/api/usuarios', async (req, res) => {
 app.put('/api/usuarios/:id', async (req, res) => {
   try {
     const d = req.body;
-    let query, params;
-    
+    // NO se actualiza el email porque es el login
     if (d.password) {
-      query = `UPDATE usuarios SET nombre=?, usuario=?, email=?, telefono=?, contrasena=?, rol=?, sucursal_id=?, activo=? WHERE usuario_id=?`;
-      params = [d.nombre, d.usuario, d.email, d.telefono, d.password, d.rol, d.sucursal_id, d.activo, req.params.id];
+      await db.query(`
+        UPDATE usuarios SET nombre=?, usuario=?, telefono=?, contrasena=?, rol=?, sucursal_id=?, activo=? 
+        WHERE usuario_id=?
+      `, [d.nombre, d.usuario, d.telefono, d.password, d.rol, d.sucursal_id, d.activo, req.params.id]);
     } else {
-      query = `UPDATE usuarios SET nombre=?, usuario=?, email=?, telefono=?, rol=?, sucursal_id=?, activo=? WHERE usuario_id=?`;
-      params = [d.nombre, d.usuario, d.email, d.telefono, d.rol, d.sucursal_id, d.activo, req.params.id];
+      await db.query(`
+        UPDATE usuarios SET nombre=?, usuario=?, telefono=?, rol=?, sucursal_id=?, activo=? 
+        WHERE usuario_id=?
+      `, [d.nombre, d.usuario, d.telefono, d.rol, d.sucursal_id, d.activo, req.params.id]);
     }
-    
-    await db.query(query, params);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
