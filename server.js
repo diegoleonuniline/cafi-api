@@ -2175,19 +2175,226 @@ app.get('/api/reportes/cuentas-cobrar', async (req, res) => {
   }
 });
 
-// USUARIOS (para selects)
+// REEMPLAZA tu GET /api/usuarios/:empresaID existente por este:
 app.get('/api/usuarios/:empresaID', async (req, res) => {
   try {
-    const [rows] = await db.query(
-      'SELECT usuario_id, nombre, email, rol FROM usuarios WHERE empresa_id = ? AND activo = "Y" ORDER BY nombre',
-      [req.params.empresaID]
-    );
+    const [rows] = await db.query(`
+      SELECT u.*, s.nombre as sucursal_nombre 
+      FROM usuarios u
+      LEFT JOIN sucursales s ON u.sucursal_id = s.sucursal_id
+      WHERE u.empresa_id = ? AND u.activo = 'Y'
+      ORDER BY u.nombre
+    `, [req.params.empresaID]);
     res.json({ success: true, usuarios: rows });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
+
+// ==================== EMPRESAS ====================
+
+app.get('/api/empresas/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM empresas WHERE empresa_id = ?', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ success: false, error: 'No encontrada' });
+    res.json({ success: true, empresa: rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/empresas/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE empresas SET 
+        nombre=?, rfc=?, telefono=?, email=?, direccion=?, 
+        regimen_fiscal=?, codigo_postal=?
+      WHERE empresa_id=?
+    `, [d.nombre, d.rfc, d.telefono, d.email, d.direccion, d.regimen_fiscal, d.codigo_postal, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== SUCURSALES ====================
+
+app.get('/api/sucursales/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM sucursales WHERE empresa_id = ? ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, sucursales: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/sucursales', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('SUC');
+    await db.query(`
+      INSERT INTO sucursales (sucursal_id, empresa_id, nombre, direccion, telefono, email, encargado, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, d.empresa_id, d.nombre, d.direccion, d.telefono, d.email, d.encargado, d.activo || 'Y']);
+    res.json({ success: true, id, sucursal_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/sucursales/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE sucursales SET nombre=?, direccion=?, telefono=?, email=?, encargado=?, activo=?
+      WHERE sucursal_id=?
+    `, [d.nombre, d.direccion, d.telefono, d.email, d.encargado, d.activo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/sucursales/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE sucursales SET activo = "N" WHERE sucursal_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== USUARIOS CRUD COMPLETO ====================
+
+app.get('/api/usuarios/:empresaID/todos', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT u.*, s.nombre as sucursal_nombre 
+      FROM usuarios u
+      LEFT JOIN sucursales s ON u.sucursal_id = s.sucursal_id
+      WHERE u.empresa_id = ? 
+      ORDER BY u.nombre
+    `, [req.params.empresaID]);
+    res.json({ success: true, usuarios: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/usuarios', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('USR');
+    await db.query(`
+      INSERT INTO usuarios (usuario_id, empresa_id, sucursal_id, nombre, usuario, email, telefono, contrasena, rol, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, d.empresa_id, d.sucursal_id, d.nombre, d.usuario, d.email, d.telefono, d.password, d.rol, d.activo || 'Y']);
+    res.json({ success: true, id, usuario_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/usuarios/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    let query, params;
+    
+    if (d.password) {
+      query = `UPDATE usuarios SET nombre=?, usuario=?, email=?, telefono=?, contrasena=?, rol=?, sucursal_id=?, activo=? WHERE usuario_id=?`;
+      params = [d.nombre, d.usuario, d.email, d.telefono, d.password, d.rol, d.sucursal_id, d.activo, req.params.id];
+    } else {
+      query = `UPDATE usuarios SET nombre=?, usuario=?, email=?, telefono=?, rol=?, sucursal_id=?, activo=? WHERE usuario_id=?`;
+      params = [d.nombre, d.usuario, d.email, d.telefono, d.rol, d.sucursal_id, d.activo, req.params.id];
+    }
+    
+    await db.query(query, params);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/usuarios/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE usuarios SET activo = "N" WHERE usuario_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== UNIDADES DE MEDIDA ====================
+
+app.get('/api/unidades/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM unidades_medida WHERE empresa_id = ? ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, unidades: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/unidades', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('UNI');
+    await db.query(`
+      INSERT INTO unidades_medida (unidad_id, empresa_id, nombre, abreviatura, clave_sat, activo)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [id, d.empresa_id, d.nombre, d.abreviatura, d.clave_sat, d.activo || 'Y']);
+    res.json({ success: true, id, unidad_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/unidades/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE unidades_medida SET nombre=?, abreviatura=?, clave_sat=?, activo=?
+      WHERE unidad_id=?
+    `, [d.nombre, d.abreviatura, d.clave_sat, d.activo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/unidades/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE unidades_medida SET activo = "N" WHERE unidad_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// DETALLE DE CORTE (para modal)
+app.get('/api/cortes/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT t.*, u.nombre as usuario_nombre
+      FROM turnos t
+      JOIN usuarios u ON t.usuario_id = u.usuario_id
+      WHERE t.turno_id = ?
+    `, [req.params.id]);
+    
+    if (rows.length === 0) return res.status(404).json({ success: false, error: 'No encontrado' });
+    res.json({ success: true, corte: rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
