@@ -2329,6 +2329,424 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// ==================== CATEGORÍAS ====================
+
+app.get('/api/categorias/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM categorias WHERE empresa_id = ? ORDER BY orden, nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, categorias: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/categorias', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('CAT');
+    await db.query(`
+      INSERT INTO categorias (categoria_id, empresa_id, padre_id, codigo, nombre, descripcion, color, icono, orden, mostrar_pos, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.padre_id || null, d.codigo, d.nombre, d.descripcion, d.color || '#3498db', d.icono, d.orden || 0, d.mostrar_pos || 'Y']);
+    res.json({ success: true, id, categoria_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/categorias/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE categorias SET padre_id=?, codigo=?, nombre=?, descripcion=?, color=?, icono=?, orden=?, mostrar_pos=?, activo=?
+      WHERE categoria_id=?
+    `, [d.padre_id || null, d.codigo, d.nombre, d.descripcion, d.color, d.icono, d.orden, d.mostrar_pos, d.activo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/categorias/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE categorias SET activo = "N" WHERE categoria_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== SUBCATEGORÍAS ====================
+
+app.get('/api/subcategorias/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT s.*, c.nombre as categoria_nombre 
+      FROM subcategorias s
+      LEFT JOIN categorias c ON s.categoria_id = c.categoria_id
+      WHERE s.empresa_id = ? ORDER BY s.orden, s.nombre
+    `, [req.params.empresaID]);
+    res.json({ success: true, subcategorias: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/subcategorias', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('SCAT');
+    await db.query(`
+      INSERT INTO subcategorias (subcategoria_id, empresa_id, categoria_id, codigo, nombre, orden, activo)
+      VALUES (?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.categoria_id, d.codigo, d.nombre, d.orden || 0]);
+    res.json({ success: true, id, subcategoria_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/subcategorias/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE subcategorias SET categoria_id=?, codigo=?, nombre=?, orden=?, activo=?
+      WHERE subcategoria_id=?
+    `, [d.categoria_id, d.codigo, d.nombre, d.orden, d.activo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/subcategorias/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE subcategorias SET activo = "N" WHERE subcategoria_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== MARCAS ====================
+
+app.get('/api/marcas/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM marcas WHERE empresa_id = ? ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, marcas: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/marcas', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('MRC');
+    await db.query(`
+      INSERT INTO marcas (marca_id, empresa_id, nombre, logo_url, activo)
+      VALUES (?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.nombre, d.logo_url]);
+    res.json({ success: true, id, marca_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/marcas/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE marcas SET nombre=?, logo_url=?, activo=? WHERE marca_id=?
+    `, [d.nombre, d.logo_url, d.activo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/marcas/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE marcas SET activo = "N" WHERE marca_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== GRUPOS CLIENTE ====================
+
+app.get('/api/grupos-cliente/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM grupos_cliente WHERE empresa_id = ? ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, grupos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/grupos-cliente', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('GRP');
+    await db.query(`
+      INSERT INTO grupos_cliente (grupo_id, empresa_id, nombre, tipo_precio, descuento_general, activo)
+      VALUES (?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.nombre, d.tipo_precio || 1, d.descuento_general || 0]);
+    res.json({ success: true, id, grupo_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/grupos-cliente/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE grupos_cliente SET nombre=?, tipo_precio=?, descuento_general=?, activo=? WHERE grupo_id=?
+    `, [d.nombre, d.tipo_precio, d.descuento_general, d.activo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/grupos-cliente/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE grupos_cliente SET activo = "N" WHERE grupo_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== PROVEEDORES ====================
+
+app.get('/api/proveedores/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM proveedores WHERE empresa_id = ? ORDER BY nombre_comercial',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, proveedores: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/proveedores', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('PROV');
+    await db.query(`
+      INSERT INTO proveedores (
+        proveedor_id, empresa_id, codigo, tipo_persona, razon_social, nombre_comercial, rfc,
+        estado, ciudad, direccion, codigo_postal, telefono, celular, email,
+        contacto_nombre, contacto_telefono, contacto_email,
+        banco, cuenta_banco, clabe, dias_credito, limite_credito, notas, activo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [
+      id, d.empresa_id, d.codigo, d.tipo_persona || 'MORAL', d.razon_social, d.nombre_comercial, d.rfc,
+      d.estado, d.ciudad, d.direccion, d.codigo_postal, d.telefono, d.celular, d.email,
+      d.contacto_nombre, d.contacto_telefono, d.contacto_email,
+      d.banco, d.cuenta_banco, d.clabe, d.dias_credito || 0, d.limite_credito || 0, d.notas
+    ]);
+    res.json({ success: true, id, proveedor_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/proveedores/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE proveedores SET 
+        codigo=?, tipo_persona=?, razon_social=?, nombre_comercial=?, rfc=?,
+        estado=?, ciudad=?, direccion=?, codigo_postal=?, telefono=?, celular=?, email=?,
+        contacto_nombre=?, contacto_telefono=?, contacto_email=?,
+        banco=?, cuenta_banco=?, clabe=?, dias_credito=?, limite_credito=?, notas=?, activo=?
+      WHERE proveedor_id=?
+    `, [
+      d.codigo, d.tipo_persona, d.razon_social, d.nombre_comercial, d.rfc,
+      d.estado, d.ciudad, d.direccion, d.codigo_postal, d.telefono, d.celular, d.email,
+      d.contacto_nombre, d.contacto_telefono, d.contacto_email,
+      d.banco, d.cuenta_banco, d.clabe, d.dias_credito, d.limite_credito, d.notas, d.activo,
+      req.params.id
+    ]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/proveedores/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE proveedores SET activo = "N" WHERE proveedor_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== CUENTAS BANCARIAS ====================
+
+app.get('/api/cuentas-bancarias/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM cuentas_bancarias WHERE empresa_id = ? ORDER BY banco',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, cuentas: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/cuentas-bancarias', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('CTA');
+    await db.query(`
+      INSERT INTO cuentas_bancarias (cuenta_id, empresa_id, banco, numero_cuenta, clabe, moneda_id, saldo, activa)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.banco, d.numero_cuenta, d.clabe, d.moneda_id || 'MXN', d.saldo || 0]);
+    res.json({ success: true, id, cuenta_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/cuentas-bancarias/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE cuentas_bancarias SET banco=?, numero_cuenta=?, clabe=?, moneda_id=?, saldo=?, activa=? WHERE cuenta_id=?
+    `, [d.banco, d.numero_cuenta, d.clabe, d.moneda_id, d.saldo, d.activa, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/cuentas-bancarias/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE cuentas_bancarias SET activa = "N" WHERE cuenta_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== CATEGORÍAS GASTO ====================
+
+app.get('/api/categorias-gasto/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM categorias_gasto WHERE empresa_id = ? ORDER BY nombre',
+      [req.params.empresaID]
+    );
+    res.json({ success: true, categorias: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/categorias-gasto', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('CATG');
+    await db.query(`
+      INSERT INTO categorias_gasto (categoria_gasto_id, empresa_id, codigo, nombre, tipo, cuenta_contable, activo)
+      VALUES (?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.codigo, d.nombre, d.tipo || 'OPERATIVO', d.cuenta_contable]);
+    res.json({ success: true, id, categoria_gasto_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/categorias-gasto/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE categorias_gasto SET codigo=?, nombre=?, tipo=?, cuenta_contable=?, activo=? WHERE categoria_gasto_id=?
+    `, [d.codigo, d.nombre, d.tipo, d.cuenta_contable, d.activo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/categorias-gasto/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE categorias_gasto SET activo = "N" WHERE categoria_gasto_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== CONCEPTOS GASTO ====================
+
+app.get('/api/conceptos-gasto/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT c.*, cg.nombre as categoria_nombre 
+      FROM conceptos_gasto c
+      LEFT JOIN categorias_gasto cg ON c.categoria_gasto_id = cg.categoria_gasto_id
+      WHERE c.empresa_id = ? ORDER BY c.nombre
+    `, [req.params.empresaID]);
+    res.json({ success: true, conceptos: rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/conceptos-gasto', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('CONG');
+    await db.query(`
+      INSERT INTO conceptos_gasto (concepto_gasto_id, empresa_id, categoria_gasto_id, codigo, nombre, descripcion, requiere_factura, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Y')
+    `, [id, d.empresa_id, d.categoria_gasto_id, d.codigo, d.nombre, d.descripcion, d.requiere_factura || 'N']);
+    res.json({ success: true, id, concepto_gasto_id: id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/conceptos-gasto/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    await db.query(`
+      UPDATE conceptos_gasto SET categoria_gasto_id=?, codigo=?, nombre=?, descripcion=?, requiere_factura=?, activo=? WHERE concepto_gasto_id=?
+    `, [d.categoria_gasto_id, d.codigo, d.nombre, d.descripcion, d.requiere_factura, d.activo, req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/conceptos-gasto/:id', async (req, res) => {
+  try {
+    await db.query('UPDATE conceptos_gasto SET activo = "N" WHERE concepto_gasto_id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
