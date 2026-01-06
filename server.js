@@ -2221,12 +2221,10 @@ app.put('/api/empresas/:id', async (req, res) => {
 
 // ==================== SUCURSALES ====================
 
-// ==================== SUCURSALES ====================
-
 app.get('/api/sucursales/:empresaID', async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM sucursales WHERE empresa_id = ? ORDER BY nombre',
+      'SELECT *, activa as activo FROM sucursales WHERE empresa_id = ? ORDER BY nombre',
       [req.params.empresaID]
     );
     res.json({ success: true, sucursales: rows });
@@ -2240,9 +2238,9 @@ app.post('/api/sucursales', async (req, res) => {
     const d = req.body;
     const id = generarID('SUC');
     await db.query(`
-      INSERT INTO sucursales (sucursal_id, empresa_id, nombre, direccion, telefono, activo)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `, [id, d.empresa_id, d.nombre, d.direccion, d.telefono, d.activo || 'Y']);
+      INSERT INTO sucursales (sucursal_id, empresa_id, nombre, direccion, telefono, email, responsable, activa)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, d.empresa_id, d.nombre, d.direccion, d.telefono, d.email, d.responsable, d.activo || 'Y']);
     res.json({ success: true, id, sucursal_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -2253,9 +2251,9 @@ app.put('/api/sucursales/:id', async (req, res) => {
   try {
     const d = req.body;
     await db.query(`
-      UPDATE sucursales SET nombre=?, direccion=?, telefono=?, activo=?
+      UPDATE sucursales SET nombre=?, direccion=?, telefono=?, email=?, responsable=?, activa=?
       WHERE sucursal_id=?
-    `, [d.nombre, d.direccion, d.telefono, d.activo, req.params.id]);
+    `, [d.nombre, d.direccion, d.telefono, d.email, d.responsable, d.activo, req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -2264,14 +2262,14 @@ app.put('/api/sucursales/:id', async (req, res) => {
 
 app.delete('/api/sucursales/:id', async (req, res) => {
   try {
-    await db.query('UPDATE sucursales SET activo = "N" WHERE sucursal_id = ?', [req.params.id]);
+    await db.query('UPDATE sucursales SET activa = "N" WHERE sucursal_id = ?', [req.params.id]);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
-// ==================== USUARIOS CRUD ====================
+// ==================== USUARIOS ====================
 
 app.get('/api/usuarios/:empresaID', async (req, res) => {
   try {
@@ -2293,9 +2291,9 @@ app.post('/api/usuarios', async (req, res) => {
     const d = req.body;
     const id = generarID('USR');
     await db.query(`
-      INSERT INTO usuarios (usuario_id, empresa_id, sucursal_id, nombre, usuario, email, telefono, contrasena, rol, activo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [id, d.empresa_id, d.sucursal_id, d.nombre, d.usuario, d.email, d.telefono, d.password, d.rol, d.activo || 'Y']);
+      INSERT INTO usuarios (usuario_id, empresa_id, sucursal_id, email, contrasena, nombre, rol, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, d.empresa_id, d.sucursal_id, d.email, d.contrasena, d.nombre, d.rol, d.activo || 'Y']);
     res.json({ success: true, id, usuario_id: id });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -2305,17 +2303,16 @@ app.post('/api/usuarios', async (req, res) => {
 app.put('/api/usuarios/:id', async (req, res) => {
   try {
     const d = req.body;
-    // NO se actualiza el email porque es el login
-    if (d.password) {
+    if (d.contrasena) {
       await db.query(`
-        UPDATE usuarios SET nombre=?, usuario=?, telefono=?, contrasena=?, rol=?, sucursal_id=?, activo=? 
+        UPDATE usuarios SET nombre=?, contrasena=?, rol=?, sucursal_id=?, activo=? 
         WHERE usuario_id=?
-      `, [d.nombre, d.usuario, d.telefono, d.password, d.rol, d.sucursal_id, d.activo, req.params.id]);
+      `, [d.nombre, d.contrasena, d.rol, d.sucursal_id, d.activo, req.params.id]);
     } else {
       await db.query(`
-        UPDATE usuarios SET nombre=?, usuario=?, telefono=?, rol=?, sucursal_id=?, activo=? 
+        UPDATE usuarios SET nombre=?, rol=?, sucursal_id=?, activo=? 
         WHERE usuario_id=?
-      `, [d.nombre, d.usuario, d.telefono, d.rol, d.sucursal_id, d.activo, req.params.id]);
+      `, [d.nombre, d.rol, d.sucursal_id, d.activo, req.params.id]);
     }
     res.json({ success: true });
   } catch (e) {
