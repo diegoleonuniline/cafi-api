@@ -990,6 +990,13 @@ app.post('/api/ventas', async (req, res) => {
       d.subtotal, d.descuento || 0, d.total, d.pagado, d.cambio
     ]);
     
+    // Obtener concepto de salida por venta
+    const [concRow] = await conn.query(
+      "SELECT concepto_id FROM conceptos_inventario WHERE empresa_id = ? AND codigo LIKE '%SAL%VTA%' LIMIT 1",
+      [d.empresa_id]
+    );
+    const conceptoSalida = concRow[0]?.concepto_id;
+    
     for (const item of d.items) {
       const detalleId = generarID('DET');
       const subtotalItem = item.precio_unitario * item.cantidad;
@@ -1006,6 +1013,43 @@ app.post('/api/ventas', async (req, res) => {
         item.unidad_id || 'PZ', item.precio_unitario, item.precio_unitario, 
         descuentoPct, descuentoMonto, item.subtotal
       ]);
+      
+      // ========== DESCONTAR INVENTARIO ==========
+      if (d.almacen_id && item.producto_id) {
+        const cantidad = parseFloat(item.cantidad) || 0;
+        
+        // Obtener existencia actual
+        const [invRow] = await conn.query(
+          'SELECT inventario_id, stock, costo_promedio FROM inventario WHERE almacen_id = ? AND producto_id = ?',
+          [d.almacen_id, item.producto_id]
+        );
+        
+        const existAnterior = parseFloat(invRow[0]?.stock) || 0;
+        const existNueva = existAnterior - cantidad;
+        const costoUnitario = parseFloat(invRow[0]?.costo_promedio) || 0;
+        
+        // Crear movimiento de salida
+        if (conceptoSalida) {
+          const movId = 'MOV' + Date.now() + Math.random().toString(36).substr(2, 5);
+          await conn.query(`
+            INSERT INTO movimientos_inventario 
+            (movimiento_id, empresa_id, sucursal_id, almacen_id, concepto_id, producto_id,
+             cantidad, costo_unitario, costo_total, existencia_anterior, existencia_nueva,
+             referencia_tipo, referencia_id, usuario_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'VENTA', ?, ?)
+          `, [movId, d.empresa_id, d.sucursal_id, d.almacen_id, conceptoSalida, item.producto_id,
+              -cantidad, costoUnitario, cantidad * costoUnitario,
+              existAnterior, existNueva, ventaId, d.usuario_id]);
+        }
+        
+        // Actualizar inventario
+        if (invRow.length > 0) {
+          await conn.query(
+            'UPDATE inventario SET stock = ?, ultimo_movimiento = NOW() WHERE almacen_id = ? AND producto_id = ?',
+            [existNueva, d.almacen_id, item.producto_id]
+          );
+        }
+      }
     }
     
     if (d.pagos && d.pagos.length > 0) {
@@ -3165,21 +3209,97 @@ app.post('/api/compras/recibir/:compraID', async (req, res) => {
         const { compraID } = req.params;
         const { productos, usuario_id } = req.body;
         
+        // Obtener datos de la compra
+        const [compraRow] = await conn.query(
+          'SELECT empresa_id, sucursal_id, almacen_id FROM compras WHERE compra_id = ?', 
+          [compraID]
+        );
+        const compra = compraRow[0];
+        
+        if (!compra || !compra.almacen_id) {
+            await conn.rollback();
+            return res.status(400).json({ success: false, error: 'Compra sin almacén asignado' });
+        }
+        
+        // Obtener concepto de entrada por compra
+        const [concRow] = await conn.query(
+          "SELECT concepto_id FROM conceptos_inventario WHERE empresa_id = ? AND codigo LIKE '%ENT%COM%' LIMIT 1",
+          [compra.empresa_id]
+        );
+        const conceptoEntrada = concRow[0]?.concepto_id;
+        
         let todoRecibido = true;
         
         for (const item of productos) {
+            const cantidadRecibir = parseFloat(item.cantidad_recibir) || 0;
+            if (cantidadRecibir <= 0) continue;
+            
+            // Actualizar detalle compra
             await conn.query(`
                 UPDATE detalle_compra SET cantidad_recibida = cantidad_recibida + ?
                 WHERE detalle_id = ?
-            `, [item.cantidad_recibir, item.detalle_id]);
+            `, [cantidadRecibir, item.detalle_id]);
             
+            // Verificar si falta por recibir
             const [det] = await conn.query(
-                'SELECT cantidad, cantidad_recibida FROM detalle_compra WHERE detalle_id = ?',
+                'SELECT producto_id, cantidad, cantidad_recibida, costo_unitario FROM detalle_compra WHERE detalle_id = ?',
                 [item.detalle_id]
             );
             
-            if (det.length > 0 && parseFloat(det[0].cantidad_recibida) < parseFloat(det[0].cantidad)) {
-                todoRecibido = false;
+            if (det.length > 0) {
+                const detalle = det[0];
+                if (parseFloat(detalle.cantidad_recibida) < parseFloat(detalle.cantidad)) {
+                    todoRecibido = false;
+                }
+                
+                // ========== AGREGAR AL INVENTARIO ==========
+                const costoUnitario = parseFloat(detalle.costo_unitario) || 0;
+                
+                // Obtener existencia actual
+                const [invRow] = await conn.query(
+                  'SELECT inventario_id, stock, costo_promedio FROM inventario WHERE almacen_id = ? AND producto_id = ?',
+                  [compra.almacen_id, detalle.producto_id]
+                );
+                
+                const existAnterior = parseFloat(invRow[0]?.stock) || 0;
+                const costoAnterior = parseFloat(invRow[0]?.costo_promedio) || costoUnitario;
+                const existNueva = existAnterior + cantidadRecibir;
+                
+                // Calcular nuevo costo promedio
+                let nuevoCosto = costoAnterior;
+                if (costoUnitario > 0 && cantidadRecibir > 0) {
+                    const valorAnterior = existAnterior * costoAnterior;
+                    const valorNuevo = cantidadRecibir * costoUnitario;
+                    nuevoCosto = existNueva > 0 ? (valorAnterior + valorNuevo) / existNueva : costoUnitario;
+                }
+                
+                // Crear movimiento de entrada
+                if (conceptoEntrada) {
+                    const movId = 'MOV' + Date.now() + Math.random().toString(36).substr(2, 5);
+                    await conn.query(`
+                        INSERT INTO movimientos_inventario 
+                        (movimiento_id, empresa_id, sucursal_id, almacen_id, concepto_id, producto_id,
+                         cantidad, costo_unitario, costo_total, existencia_anterior, existencia_nueva,
+                         referencia_tipo, referencia_id, usuario_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPRA', ?, ?)
+                    `, [movId, compra.empresa_id, compra.sucursal_id, compra.almacen_id, conceptoEntrada,
+                        detalle.producto_id, cantidadRecibir, costoUnitario, cantidadRecibir * costoUnitario,
+                        existAnterior, existNueva, compraID, usuario_id]);
+                }
+                
+                // Actualizar o insertar inventario
+                if (invRow.length > 0) {
+                    await conn.query(`
+                        UPDATE inventario SET stock = ?, costo_promedio = ?, ultimo_movimiento = NOW()
+                        WHERE almacen_id = ? AND producto_id = ?
+                    `, [existNueva, nuevoCosto, compra.almacen_id, detalle.producto_id]);
+                } else {
+                    const invId = 'INV' + Date.now() + Math.random().toString(36).substr(2, 5);
+                    await conn.query(`
+                        INSERT INTO inventario (inventario_id, empresa_id, almacen_id, producto_id, stock, costo_promedio, ultimo_movimiento)
+                        VALUES (?, ?, ?, ?, ?, ?, NOW())
+                    `, [invId, compra.empresa_id, compra.almacen_id, detalle.producto_id, existNueva, costoUnitario]);
+                }
             }
         }
         
