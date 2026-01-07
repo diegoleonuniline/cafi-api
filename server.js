@@ -3797,7 +3797,50 @@ app.post('/api/traspasos/:traspasoID/recibir', async (req, res) => {
 });
 
 
+// ==================== ALMACENES ====================
 
+// GET - Listar almacenes por empresa
+app.get('/api/almacenes/:empresaID', async (req, res) => {
+    try {
+        const [almacenes] = await db.query(`
+            SELECT 
+                a.almacen_id,
+                a.nombre,
+                a.descripcion,
+                a.sucursal_id,
+                s.nombre as sucursal_nombre,
+                a.activo,
+                a.created_at
+            FROM almacenes a
+            LEFT JOIN sucursales s ON a.sucursal_id = s.sucursal_id
+            WHERE a.empresa_id = ?
+            ORDER BY a.nombre
+        `, [req.params.empresaID]);
+        
+        res.json({ success: true, almacenes });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// POST - Crear almacén
+app.post('/api/almacenes', async (req, res) => {
+    try {
+        const { empresa_id, sucursal_id, nombre, descripcion } = req.body;
+        const almacen_id = 'ALM' + Date.now();
+        
+        await db.query(`
+            INSERT INTO almacenes (almacen_id, empresa_id, sucursal_id, nombre, descripcion, activo)
+            VALUES (?, ?, ?, ?, ?, 'Y')
+        `, [almacen_id, empresa_id, sucursal_id || null, nombre, descripcion || null]);
+        
+        res.json({ success: true, almacen_id });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 
 // ==================== START ====================
