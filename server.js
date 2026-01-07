@@ -3380,7 +3380,22 @@ app.get('/api/compras/cuentas-pagar/:empresaID', async (req, res) => {
     }
 });
 
+// ==================== ALMACENES ====================
 
+app.get('/api/almacenes/:empresaID', async (req, res) => {
+    try {
+        const [rows] = await db.query(`
+            SELECT a.*, s.nombre as sucursal_nombre 
+            FROM almacenes a
+            LEFT JOIN sucursales s ON a.sucursal_id = s.sucursal_id
+            WHERE a.empresa_id = ? AND a.activo = 'Y'
+            ORDER BY s.nombre, a.nombre
+        `, [req.params.empresaID]);
+        res.json({ success: true, almacenes: rows });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 
 
 
