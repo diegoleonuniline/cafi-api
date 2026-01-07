@@ -1249,6 +1249,7 @@ app.post('/api/ventas/cancelar-completa/:ventaID', async (req, res) => {
 });
 
 // CANCELAR PRODUCTO INDIVIDUAL
+// CANCELAR PRODUCTO INDIVIDUAL
 app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -1268,6 +1269,13 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
     const cantidadActual = parseFloat(detalle.cantidad) || 0;
     const cantidadCancelar = Math.min(parseFloat(cantidad_cancelar), cantidadActual);
     const devolucion = cantidadCancelar * precioUnit;
+    
+    // Obtener datos de la venta para el almacén
+    const [ventaRow] = await conn.query(
+      'SELECT empresa_id, sucursal_id, almacen_id FROM ventas WHERE venta_id = ?', 
+      [venta_id]
+    );
+    const venta = ventaRow[0];
     
     if (cantidadCancelar >= cantidadActual) {
       await conn.query(`
@@ -1289,6 +1297,65 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
       `, [cantidadCancelar, cantidadCancelar, cantidadCancelar, detalleID]);
     }
     
+    // ========== DEVOLVER AL INVENTARIO ==========
+    if (venta && venta.almacen_id && detalle.producto_id) {
+      // Obtener concepto de entrada por devolución/cancelación
+      const [concRow] = await conn.query(
+        "SELECT concepto_id FROM conceptos_inventario WHERE empresa_id = ? AND (codigo LIKE '%ENT%DEV%' OR codigo LIKE '%ENT%CAN%' OR codigo LIKE '%DEV%') LIMIT 1",
+        [venta.empresa_id]
+      );
+      let conceptoEntrada = concRow[0]?.concepto_id;
+      
+      // Si no existe, buscar cualquier concepto de entrada
+      if (!conceptoEntrada) {
+        const [concAlt] = await conn.query(
+          "SELECT concepto_id FROM conceptos_inventario WHERE empresa_id = ? AND tipo = 'ENTRADA' LIMIT 1",
+          [venta.empresa_id]
+        );
+        conceptoEntrada = concAlt[0]?.concepto_id;
+      }
+      
+      // Obtener existencia actual
+      const [invRow] = await conn.query(
+        'SELECT inventario_id, stock, costo_promedio FROM inventario WHERE almacen_id = ? AND producto_id = ?',
+        [venta.almacen_id, detalle.producto_id]
+      );
+      
+      const existAnterior = parseFloat(invRow[0]?.stock) || 0;
+      const existNueva = existAnterior + cantidadCancelar;
+      const costoUnitario = parseFloat(invRow[0]?.costo_promedio) || 0;
+      
+      // Crear movimiento de entrada (devolución)
+      if (conceptoEntrada) {
+        const movId = 'MOV' + Date.now() + Math.random().toString(36).substr(2, 5);
+        await conn.query(`
+          INSERT INTO movimientos_inventario 
+          (movimiento_id, empresa_id, sucursal_id, almacen_id, concepto_id, producto_id,
+           cantidad, costo_unitario, costo_total, existencia_anterior, existencia_nueva,
+           referencia_tipo, referencia_id, usuario_id, notas)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CANCELACION', ?, ?, ?)
+        `, [movId, venta.empresa_id, venta.sucursal_id, venta.almacen_id, conceptoEntrada,
+            detalle.producto_id, cantidadCancelar, costoUnitario, cantidadCancelar * costoUnitario,
+            existAnterior, existNueva, venta_id, cancelado_por, 'Cancelación de producto en venta']);
+      }
+      
+      // Actualizar inventario
+      if (invRow.length > 0) {
+        await conn.query(
+          'UPDATE inventario SET stock = ?, ultimo_movimiento = NOW() WHERE almacen_id = ? AND producto_id = ?',
+          [existNueva, venta.almacen_id, detalle.producto_id]
+        );
+      } else {
+        // Si no existía registro, crearlo
+        const invId = 'INV' + Date.now() + Math.random().toString(36).substr(2, 5);
+        await conn.query(`
+          INSERT INTO inventario (inventario_id, empresa_id, almacen_id, producto_id, stock, costo_promedio, ultimo_movimiento)
+          VALUES (?, ?, ?, ?, ?, ?, NOW())
+        `, [invId, venta.empresa_id, venta.almacen_id, detalle.producto_id, cantidadCancelar, costoUnitario]);
+      }
+    }
+    
+    // Recalcular total de la venta
     const [nuevoTotalRes] = await conn.query(`
       SELECT COALESCE(SUM(subtotal), 0) as nuevo_total 
       FROM detalle_venta 
@@ -1298,6 +1365,7 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
     
     await conn.query('UPDATE ventas SET total = ? WHERE venta_id = ?', [nuevoTotal, venta_id]);
     
+    // Historial
     const historialId = generarID('HIST');
     await conn.query(`
       INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, datos_anteriores, fecha)
@@ -1305,7 +1373,7 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
     `, [
       historialId,
       venta_id,
-      'Producto cancelado: ' + (detalle.descripcion || 'Producto') + ' x' + cantidadCancelar + '. Motivo: ' + motivo + '. Autorizado: ' + autorizado_por + '. Devolución: $' + devolucion.toFixed(2),
+      'Producto cancelado: ' + (detalle.descripcion || 'Producto') + ' x' + cantidadCancelar + '. Motivo: ' + motivo + '. Autorizado: ' + autorizado_por + '. Devolución: $' + devolucion.toFixed(2) + '. Stock devuelto.',
       cancelado_por,
       JSON.stringify({ producto_id: detalle.producto_id, cantidad_cancelada: cantidadCancelar, precio: precioUnit })
     ]);
@@ -1315,7 +1383,8 @@ app.post('/api/ventas/cancelar-producto/:detalleID', async (req, res) => {
     res.json({
       success: true,
       devolucion: devolucion,
-      nuevo_total: nuevoTotal
+      nuevo_total: nuevoTotal,
+      stock_devuelto: cantidadCancelar
     });
   } catch (e) {
     await conn.rollback();
