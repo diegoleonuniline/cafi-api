@@ -3844,7 +3844,22 @@ app.post('/api/almacenes', async (req, res) => {
     }
 });
 
+// ==================== CONCEPTOS INVENTARIO ====================
 
+app.get('/api/conceptos-inventario/:empresaID', async (req, res) => {
+    try {
+        const [conceptos] = await db.query(`
+            SELECT concepto_id, codigo, nombre, tipo, afecta_costo
+            FROM conceptos_inventario 
+            WHERE empresa_id = ? AND activo = 'Y'
+            ORDER BY tipo, nombre
+        `, [req.params.empresaID]);
+        
+        res.json({ success: true, conceptos });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
