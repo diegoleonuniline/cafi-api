@@ -3837,10 +3837,10 @@ app.post('/api/almacenes', async (req, res) => {
         const { empresa_id, sucursal_id, codigo, nombre, tipo } = req.body;
         const almacen_id = 'ALM' + Date.now();
         
-await db.query(`
-    INSERT INTO almacenes (almacen_id, empresa_id, sucursal_id, codigo, nombre, tipo, activo)
-    VALUES (?, ?, ?, ?, ?, ?, 'Y')
-`, [almacen_id, empresa_id, sucursal_id || req.body.sucursal_default || 'SUC001', codigo || null, nombre, tipo || 'PRINCIPAL
+        await db.query(`
+            INSERT INTO almacenes (almacen_id, empresa_id, sucursal_id, codigo, nombre, tipo, activo)
+            VALUES (?, ?, ?, ?, ?, ?, 'Y')
+        `, [almacen_id, empresa_id, sucursal_id, codigo || null, nombre, tipo || 'PRINCIPAL']);
         
         res.json({ success: true, almacen_id });
     } catch (error) {
