@@ -3805,15 +3805,17 @@ app.get('/api/almacenes/:empresaID', async (req, res) => {
         const [almacenes] = await db.query(`
             SELECT 
                 a.almacen_id,
+                a.codigo,
                 a.nombre,
-                a.descripcion,
+                a.tipo,
+                a.es_punto_venta,
+                a.permite_negativo,
                 a.sucursal_id,
                 s.nombre as sucursal_nombre,
-                a.activo,
-                a.created_at
+                a.activo
             FROM almacenes a
             LEFT JOIN sucursales s ON a.sucursal_id = s.sucursal_id
-            WHERE a.empresa_id = ?
+            WHERE a.empresa_id = ? AND a.activo = 'Y'
             ORDER BY a.nombre
         `, [req.params.empresaID]);
         
@@ -3827,13 +3829,13 @@ app.get('/api/almacenes/:empresaID', async (req, res) => {
 // POST - Crear almacén
 app.post('/api/almacenes', async (req, res) => {
     try {
-        const { empresa_id, sucursal_id, nombre, descripcion } = req.body;
+        const { empresa_id, sucursal_id, codigo, nombre, tipo } = req.body;
         const almacen_id = 'ALM' + Date.now();
         
         await db.query(`
-            INSERT INTO almacenes (almacen_id, empresa_id, sucursal_id, nombre, descripcion, activo)
-            VALUES (?, ?, ?, ?, ?, 'Y')
-        `, [almacen_id, empresa_id, sucursal_id || null, nombre, descripcion || null]);
+            INSERT INTO almacenes (almacen_id, empresa_id, sucursal_id, codigo, nombre, tipo, activo)
+            VALUES (?, ?, ?, ?, ?, ?, 'Y')
+        `, [almacen_id, empresa_id, sucursal_id, codigo || null, nombre, tipo || 'PRINCIPAL']);
         
         res.json({ success: true, almacen_id });
     } catch (error) {
