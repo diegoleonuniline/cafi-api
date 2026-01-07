@@ -3472,6 +3472,7 @@ app.get('/api/movimientos-inventario/:empresaID', async (req, res) => {
 });
 
 // APLICAR AJUSTE DE INVENTARIO
+// APLICAR AJUSTE DE INVENTARIO
 app.post('/api/movimientos-inventario/ajuste', async (req, res) => {
     const conn = await db.getConnection();
     try {
@@ -3485,24 +3486,28 @@ app.post('/api/movimientos-inventario/ajuste', async (req, res) => {
         for (const item of productos) {
             const movId = 'MOV' + Date.now() + Math.random().toString(36).substr(2, 5);
             
+            // FIX: usar costo o costo_unitario
+            const costoUnitario = parseFloat(item.costo_unitario || item.costo) || 0;
+            const cantidad = parseFloat(item.cantidad) || 0;
+            
             // Obtener existencia actual
             const [invRow] = await conn.query(
                 'SELECT stock, costo_promedio FROM inventario WHERE almacen_id = ? AND producto_id = ?',
                 [almacen_id, item.producto_id]
             );
-            const existAnterior = invRow[0]?.stock || 0;
-            const costoAnterior = invRow[0]?.costo_promedio || item.costo_unitario;
+            const existAnterior = parseFloat(invRow[0]?.stock) || 0;
+            const costoAnterior = parseFloat(invRow[0]?.costo_promedio) || costoUnitario;
             
             // Calcular nueva existencia
-            const cantidad = tipoConcepto === 'ENTRADA' ? item.cantidad : -item.cantidad;
-            const existNueva = parseFloat(existAnterior) + cantidad;
+            const cantidadMov = tipoConcepto === 'ENTRADA' ? cantidad : -cantidad;
+            const existNueva = existAnterior + cantidadMov;
             
             // Calcular nuevo costo promedio (solo para entradas)
             let nuevoCosto = costoAnterior;
-            if (tipoConcepto === 'ENTRADA' && item.costo_unitario > 0) {
+            if (tipoConcepto === 'ENTRADA' && costoUnitario > 0 && cantidad > 0) {
                 const valorAnterior = existAnterior * costoAnterior;
-                const valorNuevo = item.cantidad * item.costo_unitario;
-                nuevoCosto = existNueva > 0 ? (valorAnterior + valorNuevo) / existNueva : item.costo_unitario;
+                const valorNuevo = cantidad * costoUnitario;
+                nuevoCosto = existNueva > 0 ? (valorAnterior + valorNuevo) / existNueva : costoUnitario;
             }
             
             // Insertar movimiento
@@ -3513,8 +3518,8 @@ app.post('/api/movimientos-inventario/ajuste', async (req, res) => {
                  referencia_tipo, referencia_id, fecha, usuario_id, notas)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'AJUSTE', ?, ?, ?, ?)
             `, [movId, empresa_id, sucursal_id, almacen_id, concepto_id, item.producto_id,
-                cantidad, item.costo_unitario, Math.abs(cantidad) * item.costo_unitario,
-                existAnterior, existNueva, referencia, fecha || new Date(), usuario_id, notas]);
+                cantidadMov, costoUnitario, Math.abs(cantidadMov) * costoUnitario,
+                existAnterior, existNueva, referencia || null, fecha || new Date(), usuario_id, notas || null]);
             
             // Actualizar o insertar inventario
             if (invRow.length > 0) {
@@ -3527,7 +3532,7 @@ app.post('/api/movimientos-inventario/ajuste', async (req, res) => {
                 await conn.query(`
                     INSERT INTO inventario (inventario_id, empresa_id, almacen_id, producto_id, stock, costo_promedio, ultimo_movimiento)
                     VALUES (?, ?, ?, ?, ?, ?, NOW())
-                `, [invId, empresa_id, almacen_id, item.producto_id, existNueva, item.costo_unitario]);
+                `, [invId, empresa_id, almacen_id, item.producto_id, existNueva, costoUnitario]);
             }
         }
         
@@ -3535,10 +3540,10 @@ app.post('/api/movimientos-inventario/ajuste', async (req, res) => {
         res.json({ success: true });
     } catch (e) {
         await conn.rollback();
+        console.error('Error ajuste:', e);
         res.status(500).json({ success: false, error: e.message });
     } finally { conn.release(); }
 });
-
 // ==================== TRASPASOS ====================
 app.get('/api/traspasos/:empresaID', async (req, res) => {
     try {
@@ -3832,10 +3837,10 @@ app.post('/api/almacenes', async (req, res) => {
         const { empresa_id, sucursal_id, codigo, nombre, tipo } = req.body;
         const almacen_id = 'ALM' + Date.now();
         
-        await db.query(`
-            INSERT INTO almacenes (almacen_id, empresa_id, sucursal_id, codigo, nombre, tipo, activo)
-            VALUES (?, ?, ?, ?, ?, ?, 'Y')
-        `, [almacen_id, empresa_id, sucursal_id, codigo || null, nombre, tipo || 'PRINCIPAL']);
+await db.query(`
+    INSERT INTO almacenes (almacen_id, empresa_id, sucursal_id, codigo, nombre, tipo, activo)
+    VALUES (?, ?, ?, ?, ?, ?, 'Y')
+`, [almacen_id, empresa_id, sucursal_id || req.body.sucursal_default || 'SUC001', codigo || null, nombre, tipo || 'PRINCIPAL
         
         res.json({ success: true, almacen_id });
     } catch (error) {
