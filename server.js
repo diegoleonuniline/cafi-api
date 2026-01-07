@@ -2930,6 +2930,467 @@ app.get('/api/gastos/exportar/:empresaId', async (req, res) => {
         res.status(500).json({ success: false, error: e.message });
     }
 });
+
+
+// ==================== COMPRAS ====================
+
+// Listar compras
+app.get('/api/compras/:empresaID', async (req, res) => {
+    try {
+        const { desde, hasta, proveedor, estatus, tipo } = req.query;
+        let query = `
+            SELECT c.*, p.nombre_comercial as proveedor_nombre, u.nombre as usuario_nombre,
+                   s.nombre as sucursal_nombre,
+                   (SELECT COUNT(*) FROM detalle_compra WHERE compra_id = c.compra_id) as num_productos
+            FROM compras c
+            LEFT JOIN proveedores p ON c.proveedor_id = p.proveedor_id
+            LEFT JOIN usuarios u ON c.usuario_id = u.usuario_id
+            LEFT JOIN sucursales s ON c.sucursal_id = s.sucursal_id
+            WHERE c.empresa_id = ?
+        `;
+        const params = [req.params.empresaID];
+        
+        if (desde) { query += ' AND DATE(c.fecha) >= ?'; params.push(desde); }
+        if (hasta) { query += ' AND DATE(c.fecha) <= ?'; params.push(hasta); }
+        if (proveedor) { query += ' AND c.proveedor_id = ?'; params.push(proveedor); }
+        if (estatus) { query += ' AND c.estatus = ?'; params.push(estatus); }
+        if (tipo) { query += ' AND c.tipo = ?'; params.push(tipo); }
+        
+        query += ' ORDER BY c.fecha DESC LIMIT 500';
+        
+        const [compras] = await db.query(query, params);
+        res.json({ success: true, compras });
+    } catch (e) {
+        console.error('Error compras:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Detalle completo de compra
+app.get('/api/compras/detalle/:compraID', async (req, res) => {
+    try {
+        const { compraID } = req.params;
+        
+        const [compras] = await db.query(`
+            SELECT c.*, p.nombre_comercial as proveedor_nombre, p.rfc as proveedor_rfc,
+                   p.telefono as proveedor_telefono, p.email as proveedor_email,
+                   u.nombre as usuario_nombre, s.nombre as sucursal_nombre,
+                   a.nombre as almacen_nombre
+            FROM compras c
+            LEFT JOIN proveedores p ON c.proveedor_id = p.proveedor_id
+            LEFT JOIN usuarios u ON c.usuario_id = u.usuario_id
+            LEFT JOIN sucursales s ON c.sucursal_id = s.sucursal_id
+            LEFT JOIN almacenes a ON c.almacen_id = a.almacen_id
+            WHERE c.compra_id = ?
+        `, [compraID]);
+        
+        if (compras.length === 0) {
+            return res.status(404).json({ success: false, error: 'Compra no encontrada' });
+        }
+        
+        const [productos] = await db.query(`
+            SELECT d.*, pr.nombre as producto_nombre, pr.codigo_barras
+            FROM detalle_compra d
+            LEFT JOIN productos pr ON d.producto_id = pr.producto_id
+            WHERE d.compra_id = ?
+        `, [compraID]);
+        
+        const [pagos] = await db.query(`
+            SELECT pc.*, mp.nombre as metodo_nombre, u.nombre as usuario_nombre
+            FROM pago_compras pc
+            LEFT JOIN metodos_pago mp ON pc.metodo_pago_id = mp.metodo_pago_id
+            LEFT JOIN usuarios u ON pc.usuario_id = u.usuario_id
+            WHERE pc.compra_id = ? AND pc.estatus = 'APLICADO'
+            ORDER BY pc.fecha_pago DESC
+        `, [compraID]);
+        
+        res.json({ success: true, compra: compras[0], productos, pagos });
+    } catch (e) {
+        console.error('Error detalle compra:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Crear compra
+app.post('/api/compras', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const d = req.body;
+        const compraId = generarID('COM');
+        
+        const [folioRes] = await conn.query(
+            'SELECT COALESCE(MAX(CAST(folio AS UNSIGNED)), 0) + 1 as siguiente FROM compras WHERE empresa_id = ? AND tipo = ?',
+            [d.empresa_id, d.tipo || 'COMPRA']
+        );
+        const folio = folioRes[0].siguiente;
+        
+        await conn.query(`
+            INSERT INTO compras (
+                compra_id, empresa_id, sucursal_id, almacen_id, proveedor_id, usuario_id,
+                tipo, serie, folio, fecha, fecha_entrega, fecha_vencimiento,
+                moneda_id, tipo_cambio, subtotal, descuento, impuestos, total, saldo,
+                notas, estatus, factura_uuid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+            compraId, d.empresa_id, d.sucursal_id, d.almacen_id, d.proveedor_id, d.usuario_id,
+            d.tipo || 'COMPRA', d.serie || 'C', folio, d.fecha_entrega, d.fecha_vencimiento,
+            d.moneda_id || 'MXN', d.tipo_cambio || 1, d.subtotal || 0, d.descuento || 0,
+            d.impuestos || 0, d.total || 0, d.total || 0,
+            d.notas, d.estatus || 'BORRADOR', d.factura_uuid
+        ]);
+        
+        if (d.productos && d.productos.length > 0) {
+            for (const item of d.productos) {
+                const detalleId = generarID('DCOM');
+                await conn.query(`
+                    INSERT INTO detalle_compra (
+                        detalle_id, compra_id, producto_id, descripcion, cantidad, cantidad_recibida,
+                        unidad_id, costo_unitario, descuento_pct, descuento_monto,
+                        impuesto_pct, impuesto_monto, subtotal, lote, fecha_caducidad
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [
+                    detalleId, compraId, item.producto_id, item.descripcion, item.cantidad, 0,
+                    item.unidad_id || 'PZ', item.costo_unitario, item.descuento_pct || 0,
+                    item.descuento_monto || 0, item.impuesto_pct || 0, item.impuesto_monto || 0,
+                    item.subtotal, item.lote, item.fecha_caducidad
+                ]);
+            }
+        }
+        
+        await conn.commit();
+        res.json({ success: true, compra_id: compraId, folio });
+    } catch (e) {
+        await conn.rollback();
+        console.error('Error crear compra:', e);
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// Actualizar compra
+app.put('/api/compras/:compraID', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const { compraID } = req.params;
+        const d = req.body;
+        
+        await conn.query(`
+            UPDATE compras SET
+                proveedor_id = ?, almacen_id = ?, fecha_entrega = ?, fecha_vencimiento = ?,
+                moneda_id = ?, tipo_cambio = ?, subtotal = ?, descuento = ?,
+                impuestos = ?, total = ?, saldo = ?, notas = ?, estatus = ?, factura_uuid = ?
+            WHERE compra_id = ?
+        `, [
+            d.proveedor_id, d.almacen_id, d.fecha_entrega, d.fecha_vencimiento,
+            d.moneda_id, d.tipo_cambio, d.subtotal, d.descuento,
+            d.impuestos, d.total, d.saldo, d.notas, d.estatus, d.factura_uuid,
+            compraID
+        ]);
+        
+        if (d.productos !== undefined) {
+            await conn.query('DELETE FROM detalle_compra WHERE compra_id = ?', [compraID]);
+            
+            if (d.productos && d.productos.length > 0) {
+                for (const item of d.productos) {
+                    const detalleId = generarID('DCOM');
+                    await conn.query(`
+                        INSERT INTO detalle_compra (
+                            detalle_id, compra_id, producto_id, descripcion, cantidad, cantidad_recibida,
+                            unidad_id, costo_unitario, descuento_pct, descuento_monto,
+                            impuesto_pct, impuesto_monto, subtotal, lote, fecha_caducidad
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    `, [
+                        detalleId, compraID, item.producto_id, item.descripcion, item.cantidad,
+                        item.cantidad_recibida || 0, item.unidad_id || 'PZ', item.costo_unitario,
+                        item.descuento_pct || 0, item.descuento_monto || 0, item.impuesto_pct || 0,
+                        item.impuesto_monto || 0, item.subtotal, item.lote, item.fecha_caducidad
+                    ]);
+                }
+            }
+        }
+        
+        await conn.commit();
+        res.json({ success: true });
+    } catch (e) {
+        await conn.rollback();
+        console.error('Error actualizar compra:', e);
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// Recibir mercancía
+app.post('/api/compras/recibir/:compraID', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const { compraID } = req.params;
+        const { productos, usuario_id } = req.body;
+        
+        let todoRecibido = true;
+        
+        for (const item of productos) {
+            await conn.query(`
+                UPDATE detalle_compra SET cantidad_recibida = cantidad_recibida + ?
+                WHERE detalle_id = ?
+            `, [item.cantidad_recibir, item.detalle_id]);
+            
+            const [det] = await conn.query(
+                'SELECT cantidad, cantidad_recibida FROM detalle_compra WHERE detalle_id = ?',
+                [item.detalle_id]
+            );
+            
+            if (det.length > 0 && parseFloat(det[0].cantidad_recibida) < parseFloat(det[0].cantidad)) {
+                todoRecibido = false;
+            }
+        }
+        
+        const nuevoEstatus = todoRecibido ? 'RECIBIDA' : 'PARCIAL';
+        await conn.query('UPDATE compras SET estatus = ? WHERE compra_id = ?', [nuevoEstatus, compraID]);
+        
+        await conn.commit();
+        res.json({ success: true, estatus: nuevoEstatus });
+    } catch (e) {
+        await conn.rollback();
+        console.error('Error recibir:', e);
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// Cancelar compra
+app.put('/api/compras/cancelar/:compraID', async (req, res) => {
+    try {
+        const { compraID } = req.params;
+        await db.query('UPDATE compras SET estatus = "CANCELADA" WHERE compra_id = ?', [compraID]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Eliminar compra (solo borrador)
+app.delete('/api/compras/:compraID', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const { compraID } = req.params;
+        
+        const [compra] = await conn.query('SELECT estatus FROM compras WHERE compra_id = ?', [compraID]);
+        if (compra.length === 0) {
+            return res.status(404).json({ success: false, error: 'Compra no encontrada' });
+        }
+        if (compra[0].estatus !== 'BORRADOR') {
+            return res.status(400).json({ success: false, error: 'Solo se pueden eliminar compras en borrador' });
+        }
+        
+        await conn.query('DELETE FROM detalle_compra WHERE compra_id = ?', [compraID]);
+        await conn.query('DELETE FROM compras WHERE compra_id = ?', [compraID]);
+        
+        await conn.commit();
+        res.json({ success: true });
+    } catch (e) {
+        await conn.rollback();
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// ==================== PAGOS COMPRAS ====================
+
+// Listar pagos de una compra
+app.get('/api/pago-compras/compra/:compraID', async (req, res) => {
+    try {
+        const [pagos] = await db.query(`
+            SELECT pc.*, mp.nombre as metodo_nombre, cb.banco, u.nombre as usuario_nombre
+            FROM pago_compras pc
+            LEFT JOIN metodos_pago mp ON pc.metodo_pago_id = mp.metodo_pago_id
+            LEFT JOIN cuentas_bancarias cb ON pc.cuenta_bancaria_id = cb.cuenta_id
+            LEFT JOIN usuarios u ON pc.usuario_id = u.usuario_id
+            WHERE pc.compra_id = ?
+            ORDER BY pc.fecha_pago DESC
+        `, [req.params.compraID]);
+        res.json({ success: true, pagos });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Listar pagos por proveedor
+app.get('/api/pago-compras/proveedor/:proveedorID', async (req, res) => {
+    try {
+        const { desde, hasta } = req.query;
+        let query = `
+            SELECT pc.*, c.folio as compra_folio, mp.nombre as metodo_nombre
+            FROM pago_compras pc
+            LEFT JOIN compras c ON pc.compra_id = c.compra_id
+            LEFT JOIN metodos_pago mp ON pc.metodo_pago_id = mp.metodo_pago_id
+            WHERE pc.proveedor_id = ? AND pc.estatus = 'APLICADO'
+        `;
+        const params = [req.params.proveedorID];
+        
+        if (desde) { query += ' AND DATE(pc.fecha_pago) >= ?'; params.push(desde); }
+        if (hasta) { query += ' AND DATE(pc.fecha_pago) <= ?'; params.push(hasta); }
+        
+        query += ' ORDER BY pc.fecha_pago DESC';
+        
+        const [pagos] = await db.query(query, params);
+        res.json({ success: true, pagos });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Registrar pago
+app.post('/api/pago-compras', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const d = req.body;
+        const pagoId = generarID('PCOM');
+        
+        await conn.query(`
+            INSERT INTO pago_compras (
+                pago_compra_id, empresa_id, sucursal_id, compra_id, proveedor_id,
+                metodo_pago_id, cuenta_bancaria_id, monto, fecha_pago, fecha_vencimiento,
+                referencia, notas, comprobante_url, usuario_id, estatus
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, 'APLICADO')
+        `, [
+            pagoId, d.empresa_id, d.sucursal_id, d.compra_id, d.proveedor_id,
+            d.metodo_pago_id, d.cuenta_bancaria_id, d.monto, d.fecha_vencimiento,
+            d.referencia, d.notas, d.comprobante_url, d.usuario_id
+        ]);
+        
+        await conn.query(`
+            UPDATE compras SET saldo = saldo - ? WHERE compra_id = ?
+        `, [d.monto, d.compra_id]);
+        
+        const [compra] = await conn.query('SELECT saldo FROM compras WHERE compra_id = ?', [d.compra_id]);
+        if (compra.length > 0 && parseFloat(compra[0].saldo) <= 0) {
+            await conn.query('UPDATE compras SET saldo = 0 WHERE compra_id = ?', [d.compra_id]);
+        }
+        
+        await conn.commit();
+        res.json({ success: true, pago_compra_id: pagoId });
+    } catch (e) {
+        await conn.rollback();
+        console.error('Error pago compra:', e);
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// Cancelar pago
+app.put('/api/pago-compras/cancelar/:pagoID', async (req, res) => {
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+        
+        const { pagoID } = req.params;
+        
+        const [pago] = await conn.query('SELECT * FROM pago_compras WHERE pago_compra_id = ?', [pagoID]);
+        if (pago.length === 0) {
+            return res.status(404).json({ success: false, error: 'Pago no encontrado' });
+        }
+        
+        await conn.query('UPDATE pago_compras SET estatus = "CANCELADO" WHERE pago_compra_id = ?', [pagoID]);
+        
+        await conn.query('UPDATE compras SET saldo = saldo + ? WHERE compra_id = ?', [pago[0].monto, pago[0].compra_id]);
+        
+        await conn.commit();
+        res.json({ success: true });
+    } catch (e) {
+        await conn.rollback();
+        res.status(500).json({ success: false, error: e.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// KPIs compras
+app.get('/api/compras/kpis/:empresaID', async (req, res) => {
+    try {
+        const { empresaID } = req.params;
+        
+        const [hoy] = await db.query(`
+            SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as cantidad
+            FROM compras WHERE empresa_id = ? AND DATE(fecha) = CURDATE() AND estatus != 'CANCELADA'
+        `, [empresaID]);
+        
+        const [mes] = await db.query(`
+            SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as cantidad
+            FROM compras WHERE empresa_id = ? AND MONTH(fecha) = MONTH(CURDATE()) 
+            AND YEAR(fecha) = YEAR(CURDATE()) AND estatus != 'CANCELADA'
+        `, [empresaID]);
+        
+        const [pendientes] = await db.query(`
+            SELECT COALESCE(SUM(saldo), 0) as total, COUNT(*) as cantidad
+            FROM compras WHERE empresa_id = ? AND saldo > 0 AND estatus != 'CANCELADA'
+        `, [empresaID]);
+        
+        const [porRecibir] = await db.query(`
+            SELECT COUNT(*) as cantidad
+            FROM compras WHERE empresa_id = ? AND estatus IN ('PENDIENTE', 'PARCIAL')
+        `, [empresaID]);
+        
+        res.json({
+            success: true,
+            hoy: hoy[0],
+            mes: mes[0],
+            pendientes: pendientes[0],
+            por_recibir: porRecibir[0].cantidad
+        });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Cuentas por pagar (resumen por proveedor)
+app.get('/api/compras/cuentas-pagar/:empresaID', async (req, res) => {
+    try {
+        const [cuentas] = await db.query(`
+            SELECT p.proveedor_id, p.nombre_comercial as proveedor_nombre,
+                   COUNT(c.compra_id) as num_compras,
+                   COALESCE(SUM(c.saldo), 0) as saldo_total,
+                   MIN(c.fecha_vencimiento) as proxima_vencimiento
+            FROM proveedores p
+            LEFT JOIN compras c ON p.proveedor_id = c.proveedor_id 
+                AND c.saldo > 0 AND c.estatus != 'CANCELADA'
+            WHERE p.empresa_id = ? AND p.activo = 'Y'
+            GROUP BY p.proveedor_id, p.nombre_comercial
+            HAVING saldo_total > 0
+            ORDER BY saldo_total DESC
+        `, [req.params.empresaID]);
+        
+        res.json({ success: true, cuentas });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+
+
+
+
+
+
+
+
+
+
+
 // ==================== START ====================
 
 app.listen(PORT, () => console.log(`CAFI API puerto ${PORT}`));
