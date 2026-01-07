@@ -3071,6 +3071,7 @@ app.post('/api/compras', async (req, res) => {
 });
 
 // Actualizar compra
+// Actualizar compra - CORREGIDO
 app.put('/api/compras/:compraID', async (req, res) => {
     const conn = await db.getConnection();
     try {
@@ -3079,16 +3080,44 @@ app.put('/api/compras/:compraID', async (req, res) => {
         const { compraID } = req.params;
         const d = req.body;
         
+        // Obtener suma de pagos aplicados
+        const [pagosRes] = await conn.query(`
+            SELECT COALESCE(SUM(monto), 0) as total_pagado 
+            FROM pago_compras 
+            WHERE compra_id = ? AND estatus = 'APLICADO'
+        `, [compraID]);
+        const totalPagado = parseFloat(pagosRes[0].total_pagado) || 0;
+        
+        // Calcular nuevo saldo
+        const nuevoTotal = parseFloat(d.total) || 0;
+        const nuevoSaldo = Math.max(0, nuevoTotal - totalPagado);
+        
         await conn.query(`
             UPDATE compras SET
-                proveedor_id = ?, almacen_id = ?, fecha_entrega = ?, fecha_vencimiento = ?,
-                moneda_id = ?, tipo_cambio = ?, subtotal = ?, descuento = ?,
-                impuestos = ?, total = ?, saldo = ?, notas = ?, estatus = ?, factura_uuid = ?
+                proveedor_id = COALESCE(?, proveedor_id), 
+                almacen_id = COALESCE(?, almacen_id), 
+                fecha_entrega = ?, 
+                fecha_vencimiento = ?,
+                moneda_id = COALESCE(?, moneda_id), 
+                tipo_cambio = COALESCE(?, tipo_cambio), 
+                subtotal = COALESCE(?, subtotal), 
+                descuento = COALESCE(?, descuento),
+                impuestos = COALESCE(?, impuestos), 
+                iva = COALESCE(?, iva),
+                ieps = COALESCE(?, ieps),
+                total = COALESCE(?, total), 
+                saldo = ?,
+                notas = ?, 
+                estatus = COALESCE(?, estatus), 
+                factura_proveedor = ?,
+                factura_uuid = ?
             WHERE compra_id = ?
         `, [
             d.proveedor_id, d.almacen_id, d.fecha_entrega, d.fecha_vencimiento,
             d.moneda_id, d.tipo_cambio, d.subtotal, d.descuento,
-            d.impuestos, d.total, d.saldo, d.notas, d.estatus, d.factura_uuid,
+            d.impuestos, d.iva, d.ieps, d.total, 
+            nuevoSaldo,  // <-- SALDO RECALCULADO
+            d.notas, d.estatus, d.factura_proveedor, d.factura_uuid,
             compraID
         ]);
         
@@ -3102,20 +3131,22 @@ app.put('/api/compras/:compraID', async (req, res) => {
                         INSERT INTO detalle_compra (
                             detalle_id, compra_id, producto_id, descripcion, cantidad, cantidad_recibida,
                             unidad_id, costo_unitario, descuento_pct, descuento_monto,
-                            impuesto_pct, impuesto_monto, subtotal, lote, fecha_caducidad
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            iva_pct, iva_monto, ieps_pct, ieps_monto, subtotal, lote, fecha_caducidad
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     `, [
                         detalleId, compraID, item.producto_id, item.descripcion, item.cantidad,
                         item.cantidad_recibida || 0, item.unidad_id || 'PZ', item.costo_unitario,
-                        item.descuento_pct || 0, item.descuento_monto || 0, item.impuesto_pct || 0,
-                        item.impuesto_monto || 0, item.subtotal, item.lote, item.fecha_caducidad
+                        item.descuento_pct || 0, item.descuento_monto || 0, 
+                        item.iva_pct || 0, item.iva_monto || 0,
+                        item.ieps_pct || 0, item.ieps_monto || 0,
+                        item.subtotal, item.lote, item.fecha_caducidad
                     ]);
                 }
             }
         }
         
         await conn.commit();
-        res.json({ success: true });
+        res.json({ success: true, saldo: nuevoSaldo });
     } catch (e) {
         await conn.rollback();
         console.error('Error actualizar compra:', e);
@@ -3124,7 +3155,6 @@ app.put('/api/compras/:compraID', async (req, res) => {
         conn.release();
     }
 });
-
 // Recibir mercancía
 app.post('/api/compras/recibir/:compraID', async (req, res) => {
     const conn = await db.getConnection();
