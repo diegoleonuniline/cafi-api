@@ -3472,12 +3472,20 @@ app.get('/api/movimientos-inventario/:empresaID', async (req, res) => {
 });
 
 // APLICAR AJUSTE DE INVENTARIO
-// APLICAR AJUSTE DE INVENTARIO
 app.post('/api/movimientos-inventario/ajuste', async (req, res) => {
     const conn = await db.getConnection();
     try {
         await conn.beginTransaction();
-        const { empresa_id, sucursal_id, almacen_id, concepto_id, usuario_id, fecha, referencia, notas, productos } = req.body;
+        const { empresa_id, almacen_id, concepto_id, usuario_id, fecha, referencia, notas, productos } = req.body;
+        
+        // Obtener sucursal_id del almacén
+        const [almRow] = await conn.query('SELECT sucursal_id FROM almacenes WHERE almacen_id = ?', [almacen_id]);
+        const sucursal_id = almRow[0]?.sucursal_id;
+        
+        if (!sucursal_id) {
+            await conn.rollback();
+            return res.status(400).json({ success: false, error: 'Almacén no válido o sin sucursal asignada' });
+        }
         
         // Obtener tipo del concepto
         const [concRow] = await conn.query('SELECT tipo FROM conceptos_inventario WHERE concepto_id = ?', [concepto_id]);
