@@ -3396,7 +3396,33 @@ app.get('/api/almacenes/:empresaID', async (req, res) => {
         res.status(500).json({ success: false, error: e.message });
     }
 });
-
+// Listar todos los pagos de la empresa
+app.get('/api/pago-compras/:empresaID', async (req, res) => {
+    try {
+        const { desde, hasta, proveedor } = req.query;
+        let query = `
+            SELECT pc.*, p.nombre_comercial as proveedor_nombre, 
+                   mp.nombre as metodo_nombre, c.folio as compra_folio, c.serie as compra_serie
+            FROM pago_compras pc
+            LEFT JOIN proveedores p ON pc.proveedor_id = p.proveedor_id
+            LEFT JOIN metodos_pago mp ON pc.metodo_pago_id = mp.metodo_pago_id
+            LEFT JOIN compras c ON pc.compra_id = c.compra_id
+            WHERE pc.empresa_id = ?
+        `;
+        const params = [req.params.empresaID];
+        
+        if (desde) { query += ' AND DATE(pc.fecha_pago) >= ?'; params.push(desde); }
+        if (hasta) { query += ' AND DATE(pc.fecha_pago) <= ?'; params.push(hasta); }
+        if (proveedor) { query += ' AND pc.proveedor_id = ?'; params.push(proveedor); }
+        
+        query += ' ORDER BY pc.fecha_pago DESC LIMIT 500';
+        
+        const [pagos] = await db.query(query, params);
+        res.json({ success: true, pagos });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 
 
 
