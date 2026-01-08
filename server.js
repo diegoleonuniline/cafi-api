@@ -679,7 +679,25 @@ app.post('/api/ventas', async (req, res) => {
           [pagoId, d.empresa_id, d.sucursal_id, ventaId, d.turno_id, pago.metodo_pago_id, pago.monto, d.usuario_id]);
       }
     }
-    
+
+      // ========== PUNTOS - INSERTAR AQUÍ ==========
+    if (d.cliente_id) {
+      const [configRow] = await conn.query('SELECT * FROM config_empresa WHERE empresa_id = ?', [d.empresa_id]);
+      const config = configRow[0];
+      
+      if (config?.puntos_activo === 'Y') {
+        const puntosGanados = Math.floor(d.total / (config.puntos_por_peso || 10));
+        const puntosUsados = parseFloat(d.puntos_usados) || 0;
+        
+        await conn.query('UPDATE ventas SET puntos_ganados = ?, puntos_usados = ? WHERE venta_id = ?', 
+          [puntosGanados, puntosUsados, ventaId]);
+        
+        const netoPuntos = puntosGanados - puntosUsados;
+        await conn.query('UPDATE clientes SET puntos = COALESCE(puntos, 0) + ? WHERE cliente_id = ?', 
+          [netoPuntos, d.cliente_id]);
+      }
+    }
+    // ========== FIN PUNTOS ==========
     const historialId = generarID('HIST');
     await conn.query(`INSERT INTO venta_historial (historial_id, venta_id, tipo_accion, descripcion, usuario_id, fecha) VALUES (?, ?, 'CREACION', ?, ?, NOW())`,
       [historialId, ventaId, 'Venta creada. Total: $' + d.total.toFixed(2), d.usuario_id]);
@@ -1828,7 +1846,148 @@ app.post('/api/almacenes', async (req, res) => {
     res.json({ success: true, almacen_id });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
+// ==================== CONFIG EMPRESA ====================
 
+app.get('/api/config-empresa/:empresaID', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM config_empresa WHERE empresa_id = ?', [req.params.empresaID]);
+    if (rows.length === 0) return res.json({ success: true, config: null });
+    res.json({ success: true, config: rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.post('/api/config-empresa', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('CFG');
+    await db.query(`INSERT INTO config_empresa (config_id, empresa_id, puntos_activo, puntos_por_peso, punto_valor_redencion, puntos_minimo_redimir) VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, d.empresa_id, d.puntos_activo || 'N', d.puntos_por_peso || 10, d.punto_valor_redencion || 0.50, d.puntos_minimo_redimir || 100]);
+    cache.invalidate(`config_${d.empresa_id}`);
+    res.json({ success: true, config_id: id });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.put('/api/config-empresa/:empresaID', async (req, res) => {
+  try {
+    const d = req.body;
+    const [exists] = await db.query('SELECT config_id FROM config_empresa WHERE empresa_id = ?', [req.params.empresaID]);
+    if (exists.length === 0) {
+      const id = generarID('CFG');
+      await db.query(`INSERT INTO config_empresa (config_id, empresa_id, puntos_activo, puntos_por_peso, punto_valor_redencion, puntos_minimo_redimir) VALUES (?, ?, ?, ?, ?, ?)`,
+        [id, req.params.empresaID, d.puntos_activo || 'N', d.puntos_por_peso || 10, d.punto_valor_redencion || 0.50, d.puntos_minimo_redimir || 100]);
+    } else {
+      await db.query(`UPDATE config_empresa SET puntos_activo=?, puntos_por_peso=?, punto_valor_redencion=?, puntos_minimo_redimir=? WHERE empresa_id=?`,
+        [d.puntos_activo, d.puntos_por_peso, d.punto_valor_redencion, d.puntos_minimo_redimir, req.params.empresaID]);
+    }
+    cache.invalidate(`config_${req.params.empresaID}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// ==================== PUNTOS CLIENTE ====================
+
+app.get('/api/clientes/:clienteID/puntos', async (req, res) => {
+  try {
+    const [cliente] = await db.query('SELECT puntos FROM clientes WHERE cliente_id = ?', [req.params.clienteID]);
+    if (cliente.length === 0) return res.status(404).json({ success: false, error: 'Cliente no encontrado' });
+    
+    const [historial] = await db.query(`
+      SELECT v.venta_id, v.folio, v.fecha_hora, v.total, v.puntos_ganados, v.puntos_usados 
+      FROM ventas v 
+      WHERE v.cliente_id = ? AND v.estatus = 'PAGADA' AND (v.puntos_ganados > 0 OR v.puntos_usados > 0)
+      ORDER BY v.fecha_hora DESC LIMIT 50
+    `, [req.params.clienteID]);
+    
+    res.json({ success: true, puntos: cliente[0].puntos || 0, historial });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.post('/api/clientes/:clienteID/redimir-puntos', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { clienteID } = req.params;
+    const { puntos_redimir, empresa_id } = req.body;
+    
+    // Obtener config
+    const [configRow] = await conn.query('SELECT * FROM config_empresa WHERE empresa_id = ?', [empresa_id]);
+    const config = configRow[0];
+    if (!config || config.puntos_activo !== 'Y') {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'Sistema de puntos no activo' });
+    }
+    
+    // Validar puntos cliente
+    const [clienteRow] = await conn.query('SELECT puntos FROM clientes WHERE cliente_id = ?', [clienteID]);
+    const puntosActuales = parseFloat(clienteRow[0]?.puntos) || 0;
+    
+    if (puntos_redimir > puntosActuales) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'Puntos insuficientes' });
+    }
+    
+    if (puntos_redimir < config.puntos_minimo_redimir) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: `Mínimo ${config.puntos_minimo_redimir} puntos para redimir` });
+    }
+    
+    const valorDescuento = puntos_redimir * parseFloat(config.punto_valor_redencion);
+    
+    await conn.commit();
+    res.json({ 
+      success: true, 
+      puntos_redimir, 
+      valor_descuento: valorDescuento,
+      puntos_restantes: puntosActuales - puntos_redimir
+    });
+  } catch (e) { await conn.rollback(); res.status(500).json({ success: false, error: e.message }); }
+  finally { conn.release(); }
+});
+
+// ==================== DIRECCIONES CLIENTE ====================
+
+app.get('/api/direcciones/:clienteID', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM direcciones WHERE cliente_id = ? AND activo = "Y" ORDER BY es_principal DESC, alias', [req.params.clienteID]);
+    res.json({ success: true, direcciones: rows });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.post('/api/direcciones', async (req, res) => {
+  try {
+    const d = req.body;
+    const id = generarID('DIR');
+    
+    // Si es principal, quitar principal a las demás
+    if (d.es_principal === 'Y') {
+      await db.query('UPDATE direcciones SET es_principal = "N" WHERE cliente_id = ?', [d.cliente_id]);
+    }
+    
+    await db.query(`INSERT INTO direcciones (direccion_id, cliente_id, alias, calle, numero_exterior, numero_interior, colonia, ciudad, estado, codigo_postal, pais, referencias, es_principal, es_facturacion, es_envio, activo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Y')`,
+      [id, d.cliente_id, d.alias || 'Principal', d.calle, d.numero_exterior, d.numero_interior, d.colonia, d.ciudad, d.estado, d.codigo_postal, d.pais || 'México', d.referencias, d.es_principal || 'N', d.es_facturacion || 'N', d.es_envio || 'Y']);
+    res.json({ success: true, direccion_id: id });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.put('/api/direcciones/:id', async (req, res) => {
+  try {
+    const d = req.body;
+    
+    if (d.es_principal === 'Y') {
+      const [dir] = await db.query('SELECT cliente_id FROM direcciones WHERE direccion_id = ?', [req.params.id]);
+      if (dir.length > 0) await db.query('UPDATE direcciones SET es_principal = "N" WHERE cliente_id = ?', [dir[0].cliente_id]);
+    }
+    
+    await db.query(`UPDATE direcciones SET alias=?, calle=?, numero_exterior=?, numero_interior=?, colonia=?, ciudad=?, estado=?, codigo_postal=?, pais=?, referencias=?, es_principal=?, es_facturacion=?, es_envio=?, activo=? WHERE direccion_id=?`,
+      [d.alias, d.calle, d.numero_exterior, d.numero_interior, d.colonia, d.ciudad, d.estado, d.codigo_postal, d.pais, d.referencias, d.es_principal, d.es_facturacion, d.es_envio, d.activo || 'Y', req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.delete('/api/direcciones/:id', async (req, res) => {
+  try { await db.query('UPDATE direcciones SET activo = "N" WHERE direccion_id = ?', [req.params.id]); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
 // ==================== SERVER START ====================
 
 app.listen(PORT, () => console.log(`⚡ CAFI API Optimizado - puerto ${PORT}`));
